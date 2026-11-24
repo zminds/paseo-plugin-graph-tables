@@ -3,10 +3,11 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { applyQuery, inferColumns, type DataRow } from "../shared/query-engine";
 import { queryViewRpc } from "../shared/rpc";
 import type { ColumnSpec, ControlSpec, ViewSpec, WhereClause } from "../shared/view-schema";
+import { IconPillButton } from "./action-menu";
 import { ChartView } from "./chart-view";
 import { ControlsBar } from "./controls-bar";
 import { CalendarView, CodeView, ColorsView, GanttView, HeatmapView } from "./extra-views";
@@ -189,7 +190,7 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
         borderWidth: 1,
         borderColor: theme.colors.border,
         backgroundColor: theme.colors.surface1,
-        overflow: "hidden" as const,
+        overflow: "visible" as const,
         marginVertical: 4,
       },
       header: {
@@ -198,7 +199,9 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
         justifyContent: "space-between" as const,
         gap: 8,
         paddingHorizontal: compact ? 10 : 12,
-        paddingVertical: 9,
+        paddingVertical: 7,
+        borderTopLeftRadius: 9,
+        borderTopRightRadius: 9,
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
         backgroundColor: theme.colors.surface2,
@@ -208,12 +211,18 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
         flexDirection: "row" as const,
         alignItems: "center" as const,
         gap: 7,
+        minWidth: 0,
       },
       title: {
-        fontSize: 13,
-        fontWeight: "700" as const,
+        fontSize: 12.5,
+        fontWeight: "600" as const,
         color: theme.colors.foreground,
-        flexShrink: 1,
+        flexShrink: 0,
+      },
+      inlineSummary: {
+        flex: 1,
+        fontSize: 11.5,
+        color: theme.colors.foregroundMuted,
       },
       summary: {
         fontSize: 11.5,
@@ -222,19 +231,7 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
         paddingTop: 8,
         paddingBottom: 6,
       },
-      actions: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
-      actionBtn: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 4,
-        paddingHorizontal: 7,
-        paddingVertical: 4,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface1,
-      },
-      actionText: { fontSize: 11, color: theme.colors.foreground },
+      actions: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4 },
       errorBox: { padding: 12, gap: 4 },
       errorText: { fontSize: 12, color: theme.colors.statusDanger },
       loadingBox: { padding: 20, alignItems: "center" as const },
@@ -252,6 +249,30 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
       return next;
     });
   };
+
+  const title =
+    resolvedSpec.title ??
+    (effectiveType === "graph"
+      ? "Diagram"
+      : effectiveType === "stats"
+        ? "Metrics"
+        : effectiveType === "chart"
+          ? "Chart"
+          : "Data view");
+
+  const handleOpenFullScreen = () => {
+    if (!openViewInFullScreen(title, input)) {
+      setModalOpen(true);
+    }
+  };
+
+  const specJson = useMemo(() => {
+    try {
+      return JSON.stringify(resolvedSpec, null, 2);
+    } catch {
+      return undefined;
+    }
+  }, [resolvedSpec]);
 
   const renderBody = (expanded: boolean) => {
     if (isRemote && remoteQuery.isLoading && !remoteQuery.data) {
@@ -282,7 +303,9 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
             <Text style={styles.errorText}>{errMsg}</Text>
           </View>
         ) : null}
-        {resolvedSpec.summary ? <Text style={styles.summary}>{resolvedSpec.summary}</Text> : null}
+        {compact && resolvedSpec.summary ? (
+          <Text style={styles.summary}>{resolvedSpec.summary}</Text>
+        ) : null}
         {resolvedSpec.controls?.length ? (
           <ControlsBar
             controls={resolvedSpec.controls}
@@ -318,6 +341,10 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
             compact={compact}
             title={resolvedSpec.title}
             viewId={input.kind === "token" ? input.viewId : undefined}
+            onExpand={!expanded ? handleOpenFullScreen : undefined}
+            showChartToggle={canToggleTableChart}
+            onToggleChart={() => setViewModeOverride("chart")}
+            specJson={specJson}
           />
         ) : effectiveType === "chart" ? (
           <ChartView
@@ -329,6 +356,10 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
             expanded={expanded}
             title={resolvedSpec.title}
             viewId={input.kind === "token" ? input.viewId : undefined}
+            onExpand={!expanded ? handleOpenFullScreen : undefined}
+            showTableToggle={canToggleTableChart}
+            onToggleTable={() => setViewModeOverride("table")}
+            specJson={specJson}
           />
         ) : effectiveType === "stats" ? (
           <StatsView spec={resolvedSpec} rows={rows} theme={theme} compact={compact} />
@@ -340,6 +371,8 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
             expanded={expanded}
             title={resolvedSpec.title}
             viewId={input.kind === "token" ? input.viewId : undefined}
+            onExpand={!expanded ? handleOpenFullScreen : undefined}
+            specJson={specJson}
           />
         ) : effectiveType === "gantt" ? (
           <GanttView rows={rows} theme={theme} compact={compact} />
@@ -367,21 +400,20 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
             onPageChange={setPage}
             theme={theme}
             compact={compact}
+            title={resolvedSpec.title}
+            viewId={input.kind === "token" ? input.viewId : undefined}
+            onExpand={!expanded ? handleOpenFullScreen : undefined}
+            showChartToggle={canToggleTableChart}
+            onToggleChart={() => setViewModeOverride("chart")}
+            specJson={specJson}
           />
         )}
       </View>
     );
   };
 
-  const title =
-    resolvedSpec.title ??
-    (effectiveType === "graph"
-      ? "Diagram"
-      : effectiveType === "stats"
-        ? "Metrics"
-        : effectiveType === "chart"
-          ? "Chart"
-          : "Data view");
+  const hasDedicatedChrome =
+    effectiveType === "table" || effectiveType === "chart" || effectiveType === "graph";
 
   return (
     <View style={styles.card}>
@@ -389,12 +421,17 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
         <View style={styles.headerLeft}>
           <Icon
             name={effectiveType === "graph" ? "Network" : effectiveType === "code" ? "Code" : "ChartNoAxesColumn"}
-            size={15}
+            size={14}
             color={theme.colors.accent}
           />
           <Text numberOfLines={1} style={styles.title}>
             {title}
           </Text>
+          {!compact && resolvedSpec.summary ? (
+            <Text numberOfLines={1} style={styles.inlineSummary}>
+              {resolvedSpec.summary}
+            </Text>
+          ) : null}
         </View>
         <View style={styles.actions}>
           {graphMetaLabel ? (
@@ -402,38 +439,22 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
               {graphMetaLabel}
             </Text>
           ) : null}
-          {canToggleTableChart ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setViewModeOverride(effectiveType === "table" ? "chart" : "table")}
-              style={styles.actionBtn}
-            >
-              <Text style={styles.actionText}>
-                {effectiveType === "table" ? "Chart" : "Table"}
-              </Text>
-            </Pressable>
-          ) : null}
           {isRemote && remoteQuery.data?.sourceKind ? (
-            <Pressable
-              accessibilityRole="button"
+            <IconPillButton
+              icon="RotateCw"
+              tooltip="刷新数据"
+              theme={theme}
               onPress={() => setRefreshTick((t) => t + 1)}
-              style={styles.actionBtn}
-            >
-              <Icon name="RotateCw" size={12} color={theme.colors.foreground} />
-            </Pressable>
+            />
           ) : null}
-          {!isFullScreen ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                if (!openViewInFullScreen(title, input)) {
-                  setModalOpen(true);
-                }
-              }}
-              style={styles.actionBtn}
-            >
-              <Icon name="Maximize2" size={12} color={theme.colors.foreground} />
-            </Pressable>
+          {!isFullScreen && !hasDedicatedChrome ? (
+            <IconPillButton
+              icon="Maximize2"
+              tooltip="在完整窗口中打开"
+              tooltipAlign="right"
+              theme={theme}
+              onPress={handleOpenFullScreen}
+            />
           ) : null}
         </View>
       </View>

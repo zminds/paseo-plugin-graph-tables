@@ -54,7 +54,7 @@ export const listViewsRpc = defineRpc({
 export const exportViewRpc = defineRpc({
   name: "views.export",
   input: z.object({
-    format: z.enum(["markdown", "csv", "json", "svg", "png"]),
+    format: z.enum(["markdown", "csv", "tsv", "json", "sql", "svg", "png"]),
     title: z.string().optional(),
     content: z.string().optional(),
     svg: z.string().optional(),
@@ -69,5 +69,22 @@ export const exportViewRpc = defineRpc({
     bytes: z.number(),
     mimeType: z.string(),
     error: z.string().nullable(),
+  }),
+});
+
+export const syncSkillsRpc = defineRpc({
+  name: "skills.sync",
+  input: z.object({
+    action: z.enum(["status", "install", "remove"]),
+  }),
+  output: z.object({
+    targets: z.array(
+      z.object({
+        root: z.string(),
+        skillPath: z.string(),
+        status: z.enum(["installed", "linked", "missing", "user-modified", "error"]),
+        error: z.string().nullable(),
+      }),
+    ),
   }),
 });

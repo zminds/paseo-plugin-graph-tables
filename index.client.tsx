@@ -1,3 +1,9 @@
+/**
+ * Paseo Graph & Tables plugin client entry.
+ *
+ * Re-implements Beluga's (https://github.com/beluga-labs/beluga) interactive view
+ * and graph UI inside Paseo's cross-platform plugin surface architecture.
+ */
 import { settingsRpc } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { GraphTablesSettingsScreen } from "./client/settings-screen";

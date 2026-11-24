@@ -1,6 +1,8 @@
 import { formatCellValue, type DataRow } from "./query-engine";
 import type { ColumnSpec } from "./view-schema";
 
+export type ExportValueMode = "formatted" | "raw";
+
 function isRightAlignedColumn(col: ColumnSpec): boolean {
   if (col.align === "right") return true;
   if (col.align === "left" || col.align === "center") return false;
@@ -16,9 +18,24 @@ function escapeMarkdownCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
 }
 
+function resolveCellString(
+  raw: unknown,
+  col: ColumnSpec,
+  mode: ExportValueMode,
+  emptyFallback = "",
+): string {
+  if (raw === null || raw === undefined) return emptyFallback;
+  if (mode === "raw") {
+    if (typeof raw === "object") return JSON.stringify(raw);
+    return String(raw);
+  }
+  return formatCellValue(raw, col.type);
+}
+
 export function rowsToMarkdownTable(
   columns: readonly ColumnSpec[],
   rows: readonly DataRow[],
+  mode: ExportValueMode = "formatted",
 ): string {
   if (columns.length === 0) return "";
   const header = `| ${columns.map((c) => escapeMarkdownCell(c.label ?? c.key)).join(" | ")} |`;
@@ -31,8 +48,8 @@ export function rowsToMarkdownTable(
 
   const body = rows.map((row) => {
     const cells = columns.map((col) => {
-      const formatted = formatCellValue(row[col.key], col.type);
-      return escapeMarkdownCell(formatted);
+      const text = resolveCellString(row[col.key], col, mode, mode === "raw" ? "" : "—");
+      return escapeMarkdownCell(text);
     });
     return `| ${cells.join(" | ")} |`;
   });
@@ -40,7 +57,11 @@ export function rowsToMarkdownTable(
   return [header, alignRow, ...body].join("\n");
 }
 
-export function rowsToCsv(columns: readonly ColumnSpec[], rows: readonly DataRow[]): string {
+export function rowsToCsv(
+  columns: readonly ColumnSpec[],
+  rows: readonly DataRow[],
+  mode: ExportValueMode = "formatted",
+): string {
   if (columns.length === 0) return "";
   const escape = (val: string) =>
     /[",\n\r]/.test(val) ? `"${val.replace(/"/g, '""')}"` : val;
@@ -49,17 +70,89 @@ export function rowsToCsv(columns: readonly ColumnSpec[], rows: readonly DataRow
     columns
       .map((col) => {
         const raw = row[col.key];
-        const formatted =
-          raw === null || raw === undefined
-            ? ""
-            : typeof raw === "number" || typeof raw === "boolean"
-              ? String(raw)
-              : formatCellValue(raw, col.type);
-        return escape(formatted);
+        const text =
+          mode === "formatted" && (typeof raw === "number" || typeof raw === "boolean")
+            ? col.type === "currency" || col.type === "percent" || col.type === "bytes" || col.type === "bool"
+              ? formatCellValue(raw, col.type)
+              : String(raw)
+            : resolveCellString(raw, col, mode, "");
+        return escape(text);
       })
       .join(","),
   );
   return [header, ...body].join("\n");
+}
+
+export function rowsToTsv(
+  columns: readonly ColumnSpec[],
+  rows: readonly DataRow[],
+  mode: ExportValueMode = "formatted",
+): string {
+  if (columns.length === 0) return "";
+  const cleanTsv = (val: string) =>
+    val.replace(/\t/g, " ").replace(/\r?\n/g, "\\n");
+  const header = columns.map((c) => cleanTsv(c.label ?? c.key)).join("\t");
+  const body = rows.map((row) =>
+    columns
+      .map((col) => cleanTsv(resolveCellString(row[col.key], col, mode, "")))
+      .join("\t"),
+  );
+  return [header, ...body].join("\n");
+}
+
+export function rowsToJson(
+  columns: readonly ColumnSpec[],
+  rows: readonly DataRow[],
+  mode: ExportValueMode = "formatted",
+): string {
+  const out = rows.map((row) => {
+    const obj: Record<string, unknown> = {};
+    for (const col of columns) {
+      const key = mode === "formatted" ? (col.label ?? col.key) : col.key;
+      const raw = row[col.key];
+      obj[key] =
+        mode === "raw"
+          ? (raw ?? null)
+          : raw === null || raw === undefined
+            ? null
+            : formatCellValue(raw, col.type);
+    }
+    return obj;
+  });
+  return JSON.stringify(out, null, 2);
+}
+
+function quoteSqlIdentifier(name: string): string {
+  const clean = name.replace(/[^\p{L}\p{N}_]/gu, "_").replace(/^_+|_+$/g, "") || "col";
+  return `"${clean.replace(/"/g, '""')}"`;
+}
+
+function quoteSqlLiteral(raw: unknown, col: ColumnSpec, mode: ExportValueMode): string {
+  if (raw === null || raw === undefined) return "NULL";
+  if (mode === "raw") {
+    if (typeof raw === "number") return Number.isFinite(raw) ? String(raw) : "NULL";
+    if (typeof raw === "boolean") return raw ? "TRUE" : "FALSE";
+    if (typeof raw === "object") return `'${JSON.stringify(raw).replace(/'/g, "''")}'`;
+    return `'${String(raw).replace(/'/g, "''")}'`;
+  }
+  return `'${formatCellValue(raw, col.type).replace(/'/g, "''")}'`;
+}
+
+export function rowsToSqlInserts(
+  columns: readonly ColumnSpec[],
+  rows: readonly DataRow[],
+  tableName = "exported_view",
+  mode: ExportValueMode = "formatted",
+): string {
+  if (columns.length === 0 || rows.length === 0) return "";
+  const safeTable = quoteSqlIdentifier(tableName);
+  const colList = columns.map((c) => quoteSqlIdentifier(c.key)).join(", ");
+  return rows
+    .map((row) => {
+      const vals = columns.map((col) => quoteSqlLiteral(row[col.key], col, mode)).join(", ");
+      return `INSERT INTO ${safeTable} (${colList}) VALUES (${vals});`;
+    })
+    .join("\n");
 }
 
 function pad2(n: number): string {

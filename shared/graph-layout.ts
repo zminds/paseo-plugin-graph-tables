@@ -1,3 +1,7 @@
+/**
+ * Layered DAG + SmoothStep orthogonal router and group container layout engine,
+ * replicating Beluga's (https://github.com/beluga-labs/beluga) React Flow graph model.
+ */
 import { visualTextUnits } from "./query-engine";
 import type { GraphEdge, GraphNode, GraphSpec, GraphStep } from "./view-schema";
 

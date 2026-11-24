@@ -1,13 +1,15 @@
-import { useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
+import { useRpc, useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
 import {
   SettingsAction,
   SettingsCard,
   SettingsSection,
   SettingsSelect,
   SettingsSwitch,
+  useToast,
 } from "@getpaseo/plugin/client/ui";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
+import { syncSkillsRpc } from "../shared/rpc";
 import { pluginSettings, type GraphTablesSettings } from "../shared/settings";
 
 type ReadySettings = Extract<SettingsState<typeof pluginSettings.schema>, { status: "ready" }>;
@@ -39,6 +41,42 @@ function SettingsEditor({
   settings: ReadySettings;
   theme: PluginSurfaceProps["theme"];
 }) {
+  const toast = useToast();
+  const syncSkills = useRpc(syncSkillsRpc);
+  const [skillStatusText, setSkillStatusText] = useState<string>(
+    "Syncs to ~/.agents/skills, ~/.claude/skills, ~/.gemini/config/skills",
+  );
+  const [syncingSkills, setSyncingSkills] = useState(false);
+
+  useEffect(() => {
+    void syncSkills({ action: "status" })
+      .then((res) => {
+        const summary = res.targets
+          .map((t) => `${t.root.replace(/^\/Users\/[^/]+/, "~")}: ${t.status}`)
+          .join(" · ");
+        if (summary) setSkillStatusText(summary);
+        return undefined;
+      })
+      .catch(() => {});
+  }, [syncSkills, settings.values.installGlobalSkills]);
+
+  const handleSyncNow = async () => {
+    if (syncingSkills) return;
+    setSyncingSkills(true);
+    try {
+      const res = await syncSkills({ action: "install" });
+      const summary = res.targets
+        .map((t) => `${t.root.replace(/^\/Users\/[^/]+/, "~")}: ${t.status}`)
+        .join(" · ");
+      setSkillStatusText(summary);
+      toast.show("Global SKILL.md targets synchronized", { variant: "success" });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Skill sync failed");
+    } finally {
+      setSyncingSkills(false);
+    }
+  };
+
   const patch = useCallback(
     (partial: Partial<GraphTablesSettings>) => {
       void settings.save({ ...settings.values, ...partial }, settings.revision);
@@ -75,6 +113,20 @@ function SettingsEditor({
             value={settings.values.upgradeMarkdownTables}
             disabled={settings.saving}
             onValueChange={(upgradeMarkdownTables) => patch({ upgradeMarkdownTables })}
+          />
+          <SettingsSwitch
+            label="Install global agent SKILL.md"
+            hint="Auto-installs ~/.agents/skills, ~/.claude/skills, and ~/.gemini/config/skills (preserves symlinks)."
+            value={settings.values.installGlobalSkills}
+            disabled={settings.saving}
+            onValueChange={(installGlobalSkills) => patch({ installGlobalSkills })}
+          />
+          <SettingsAction
+            label="Global skill targets"
+            hint={skillStatusText}
+            actionLabel={syncingSkills ? "Syncing..." : "Sync now"}
+            disabled={syncingSkills}
+            onPress={() => void handleSyncNow()}
           />
         </SettingsCard>
       </SettingsSection>

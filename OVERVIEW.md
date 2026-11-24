@@ -1,6 +1,6 @@
 Graph & Tables adds interactive tables, charts, KPI stat tiles, timelines, heatmaps, activity calendars, color palettes, code views, and auto-layout architecture diagrams directly inside Paseo agent timelines.
 
-It replicates the Beluga view and graph visualization workflow for Paseo agents using two mechanisms:
+Adapted and re-implemented from [Beluga](https://github.com/beluga-labs/beluga)'s graph and view architecture to run natively inside Paseo's plugin subprocess and cross-platform UI runtime, using two mechanisms:
 
 1. Inline fenced blocks: agents can output `paseo-view`, `beluga-view`, `paseo-graph`, or `beluga-graph` JSON code blocks in replies, and multi-row Markdown tables can optionally upgrade to sortable, searchable interactive tables.
 2. Tool-backed views: for large datasets or live queries, the `show_view` agent tool executes a data source on the daemon, caches rows in the plugin subprocess, and returns a short `<<paseo-view:...>>` token so the client can sort, filter, search, paginate, toggle between table and chart views, and refresh data without inflating timeline payloads.

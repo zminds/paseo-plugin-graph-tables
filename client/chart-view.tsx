@@ -1,3 +1,7 @@
+/**
+ * Interactive chart renderer with 6 chart modes, hover crosshairs/readouts,
+ * and Beluga-style SVG/PNG export controls (https://github.com/beluga-labs/beluga).
+ */
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { copyText, useToast } from "@getpaseo/plugin/client/ui";
@@ -7,6 +11,7 @@ import type { DataRow } from "../shared/query-engine";
 import { exportViewRpc } from "../shared/rpc";
 import { exportChartToSvg } from "../shared/svg-export";
 import type { ChartKind, ColumnSpec, ViewSpec } from "../shared/view-schema";
+import { ActionPopoverMenu, IconPillButton } from "./action-menu";
 import { formatCompactNumber, parseChartData } from "./format";
 import { isWebPlatform, rasterizeSvgToPngBase64, WebSvgChart } from "./web";
 
@@ -28,6 +33,10 @@ export interface ChartViewProps {
   expanded?: boolean;
   title?: string;
   viewId?: string;
+  onExpand?(): void;
+  onToggleTable?(): void;
+  showTableToggle?: boolean;
+  specJson?: string;
 }
 
 export function ChartView({
@@ -39,6 +48,10 @@ export function ChartView({
   expanded = false,
   title,
   viewId,
+  onExpand,
+  onToggleTable,
+  showTableToggle = false,
+  specJson,
 }: ChartViewProps) {
   const toast = useToast();
   const exportView = useRpc(exportViewRpc);
@@ -48,12 +61,14 @@ export function ChartView({
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>(compact ? 320 : 560);
+  const [menuOpen, setMenuOpen] = useState<boolean>(false);
   const [exporting, setExporting] = useState<boolean>(false);
 
   useEffect(() => {
     setKindOverride(null);
     setSelectedIndex(null);
     setHoveredIndex(null);
+    setMenuOpen(false);
     setHiddenSeries(new Set());
   }, [spec]);
 
@@ -95,9 +110,9 @@ export function ChartView({
     try {
       const { svg } = buildSvgPayload();
       await copyText(svg);
-      toast.show("Copied chart SVG", { variant: "success" });
+      toast.show("已拷贝图表 SVG", { variant: "success" });
     } catch {
-      toast.error("Failed to copy SVG");
+      toast.error("拷贝 SVG 失败");
     }
   };
 
@@ -119,12 +134,12 @@ export function ChartView({
       });
       if (res.ok && res.filePath) {
         await copyText(res.filePath).catch(() => {});
-        toast.show(`Saved ${res.filePath}`, { variant: "success" });
+        toast.show(`已保存 ${res.filePath}`, { variant: "success" });
       } else {
-        toast.error(res.error ?? `Failed to export ${format.toUpperCase()}`);
+        toast.error(res.error ?? `导出 ${format.toUpperCase()} 失败`);
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Export failed");
+      toast.error(error instanceof Error ? error.message : "导出失败");
     } finally {
       setExporting(false);
     }
@@ -132,63 +147,56 @@ export function ChartView({
 
   const styles = useMemo(
     () => ({
-      root: { padding: compact ? 10 : 14, gap: 10 },
+      root: { padding: compact ? 10 : 12, gap: 9 },
       topBar: {
+        position: "relative" as const,
         flexDirection: "row" as const,
         alignItems: "center" as const,
         justifyContent: "space-between" as const,
         flexWrap: "wrap" as const,
-        gap: 8,
+        gap: 6,
       },
-      chipGroup: {
+      segmented: {
         flexDirection: "row" as const,
         alignItems: "center" as const,
         flexWrap: "wrap" as const,
-        gap: 4,
-      },
-      typePill: {
-        paddingHorizontal: 8,
-        paddingVertical: 3,
-        borderRadius: 6,
+        gap: 2,
+        padding: 2,
+        borderRadius: 8,
         borderWidth: 1,
         borderColor: theme.colors.border,
         backgroundColor: theme.colors.surface0,
       },
+      typePill: {
+        paddingHorizontal: 7,
+        paddingVertical: 2.5,
+        borderRadius: 6,
+      },
       typePillActive: {
-        borderColor: theme.colors.accent,
         backgroundColor: theme.colors.accent,
       },
-      typePillText: { fontSize: 11, fontWeight: "600" as const, color: theme.colors.foregroundMuted },
-      typePillTextActive: { color: theme.colors.accentForeground },
-      exportBtn: {
-        paddingHorizontal: 8,
-        paddingVertical: 3,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface2,
-      },
-      exportText: { fontSize: 11, fontWeight: "600" as const, color: theme.colors.foreground },
-      legend: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8 },
+      typePillText: { fontSize: 11, fontWeight: "500" as const, color: theme.colors.foregroundMuted },
+      typePillTextActive: { fontWeight: "600" as const, color: theme.colors.accentForeground },
+      legend: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6 },
       legendItem: {
         flexDirection: "row" as const,
         alignItems: "center" as const,
         gap: 5,
         paddingHorizontal: 7,
-        paddingVertical: 3,
+        paddingVertical: 2.5,
         borderRadius: 999,
         borderWidth: 1,
         borderColor: theme.colors.border,
         backgroundColor: theme.colors.surface0,
       },
-      legendDot: { width: 8, height: 8, borderRadius: 4 },
-      legendText: { fontSize: 11.5, color: theme.colors.foreground },
+      legendDot: { width: 7, height: 7, borderRadius: 3.5 },
+      legendText: { fontSize: 11, color: theme.colors.foreground },
       readout: {
         flexDirection: "row" as const,
         flexWrap: "wrap" as const,
         gap: 10,
         paddingHorizontal: 10,
-        paddingVertical: 6,
+        paddingVertical: 5,
         borderRadius: 6,
         backgroundColor: theme.colors.surface2,
       },
@@ -211,7 +219,6 @@ export function ChartView({
   const pieSlices = parsed.pieSlices.filter((s) => s.value > 0);
   const pieTotal = Math.max(1e-9, pieSlices.reduce((acc, s) => acc + s.value, 0));
 
-  // Native RN fallback rendering when Platform.OS !== "web"
   const renderNativeFallback = () => {
     if (kind === "pie" || kind === "donut") {
       return (
@@ -290,8 +297,8 @@ export function ChartView({
 
   return (
     <View style={styles.root} onLayout={onLayout}>
-      <View style={styles.topBar}>
-        <View style={styles.chipGroup}>
+      <View style={[styles.topBar, { zIndex: menuOpen ? 60 : 2 }]}>
+        <View style={styles.segmented}>
           {CHART_KINDS.map((item) => {
             const active = kind === item.kind;
             return (
@@ -312,30 +319,81 @@ export function ChartView({
             );
           })}
         </View>
-        <View style={styles.chipGroup}>
-          <Pressable
-            accessibilityRole="button"
+
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+          {showTableToggle && onToggleTable ? (
+            <IconPillButton
+              icon="Table"
+              tooltip="切换为表格"
+              theme={theme}
+              onPress={onToggleTable}
+            />
+          ) : null}
+          <IconPillButton
+            icon="Copy"
+            tooltip="拷贝 SVG"
+            theme={theme}
             onPress={() => void handleCopySvg()}
-            style={styles.exportBtn}
-          >
-            <Text style={styles.exportText}>Copy SVG</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            disabled={exporting}
-            onPress={() => void handleSaveExport("svg")}
-            style={[styles.exportBtn, exporting ? { opacity: 0.5 } : null]}
-          >
-            <Text style={styles.exportText}>Save SVG</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            disabled={exporting}
-            onPress={() => void handleSaveExport("png")}
-            style={[styles.exportBtn, exporting ? { opacity: 0.5 } : null]}
-          >
-            <Text style={styles.exportText}>Save PNG</Text>
-          </Pressable>
+          />
+          {onExpand ? (
+            <IconPillButton
+              icon="Maximize2"
+              tooltip="在完整窗口中打开"
+              theme={theme}
+              onPress={onExpand}
+            />
+          ) : null}
+          <View style={{ position: "relative" }}>
+            <IconPillButton
+              icon="MoreHorizontal"
+              active={menuOpen}
+              tooltip="导出图表"
+              tooltipAlign="right"
+              theme={theme}
+              onPress={() => setMenuOpen((o) => !o)}
+            />
+            <ActionPopoverMenu
+              open={menuOpen}
+              compact={compact}
+              theme={theme}
+              minWidth={164}
+              onClose={() => setMenuOpen(false)}
+              entries={[
+                {
+                  id: "copy-svg",
+                  icon: "Copy",
+                  label: "拷贝为 SVG",
+                  onPress: () => void handleCopySvg(),
+                },
+                ...(specJson
+                  ? [
+                      {
+                        id: "copy-json",
+                        icon: "Code",
+                        label: "拷贝视图定义",
+                        onPress: () =>
+                          void copyText(specJson)
+                            .then(() => toast.show("已拷贝视图定义", { variant: "success" }))
+                            .catch(() => toast.error("拷贝失败")),
+                      },
+                    ]
+                  : []),
+                { kind: "divider", id: "div-c" },
+                {
+                  id: "save-svg",
+                  icon: "Download",
+                  label: "保存为 SVG...",
+                  onPress: () => void handleSaveExport("svg"),
+                },
+                {
+                  id: "save-png",
+                  icon: "Image",
+                  label: "保存为 PNG...",
+                  onPress: () => void handleSaveExport("png"),
+                },
+              ]}
+            />
+          </View>
         </View>
       </View>
 
@@ -395,7 +453,7 @@ export function ChartView({
           onSelectIndex={setSelectedIndex}
           onHoverIndex={setHoveredIndex}
           theme={theme}
-          width={Math.max(260, containerWidth - (compact ? 20 : 28))}
+          width={Math.max(260, containerWidth - (compact ? 20 : 24))}
           height={chartHeight}
         />
       ) : (

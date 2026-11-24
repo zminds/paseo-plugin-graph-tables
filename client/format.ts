@@ -1,5 +1,12 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { rowsToCsv, rowsToMarkdownTable } from "../shared/export-format";
+import {
+  rowsToCsv,
+  rowsToJson,
+  rowsToMarkdownTable,
+  rowsToSqlInserts,
+  rowsToTsv,
+  type ExportValueMode,
+} from "../shared/export-format";
 import type { DataRow } from "../shared/query-engine";
 import {
   computeNiceScale,
@@ -14,7 +21,11 @@ export {
   computeNiceScale,
   formatCompactNumber,
   rowsToCsv,
+  rowsToJson,
   rowsToMarkdownTable,
+  rowsToSqlInserts,
+  rowsToTsv,
+  type ExportValueMode,
   type ScatterPoint,
 };
 

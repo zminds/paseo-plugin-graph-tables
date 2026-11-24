@@ -1,3 +1,7 @@
+/**
+ * View & Graph Zod schemas adapted from Beluga's (https://github.com/beluga-labs/beluga)
+ * visualization specification for Paseo plugin RPCs and timeline renderers.
+ */
 import { z } from "zod";
 
 export const columnTypeSchema = z.enum([

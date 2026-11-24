@@ -11,7 +11,9 @@ import type { ViewStore } from "./view-store";
 const MIME_BY_FORMAT: Record<RpcInput<typeof exportViewRpc>["format"], { ext: string; mime: string }> = {
   markdown: { ext: "md", mime: "text/markdown; charset=utf-8" },
   csv: { ext: "csv", mime: "text/csv; charset=utf-8" },
+  tsv: { ext: "tsv", mime: "text/tab-separated-values; charset=utf-8" },
   json: { ext: "json", mime: "application/json; charset=utf-8" },
+  sql: { ext: "sql", mime: "application/sql; charset=utf-8" },
   svg: { ext: "svg", mime: "image/svg+xml; charset=utf-8" },
   png: { ext: "png", mime: "image/png" },
 };

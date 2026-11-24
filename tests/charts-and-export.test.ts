@@ -6,7 +6,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parseChartData } from "../client/format";
 import { createExportViewHandler } from "../server/export";
 import { ViewStore } from "../server/view-store";
-import { rowsToCsv, rowsToMarkdownTable, sanitizeExportFilename } from "../shared/export-format";
+import {
+  rowsToCsv,
+  rowsToJson,
+  rowsToMarkdownTable,
+  rowsToSqlInserts,
+  rowsToTsv,
+  sanitizeExportFilename,
+} from "../shared/export-format";
 import { applyGraphOffsets, layoutGraph } from "../shared/graph-layout";
 import { inferColumns } from "../shared/query-engine";
 import { DEFAULT_SETTINGS } from "../shared/settings";
@@ -65,8 +72,26 @@ describe("markdown, csv, svg, and png export", () => {
       ].join("\n"),
     );
 
-    const csv = rowsToCsv(inferColumns(rows, cols), rows);
-    expect(csv).toContain("Core | API,12400,0.75,\"line1\nline2\"");
+    const csvFormatted = rowsToCsv(inferColumns(rows, cols), rows, "formatted");
+    expect(csvFormatted).toContain('Core | API,"$12,400",75%,"line1\nline2"');
+
+    const csvRaw = rowsToCsv(inferColumns(rows, cols), rows, "raw");
+    expect(csvRaw).toContain('Core | API,12400,0.75,"line1\nline2"');
+
+    // TSV, JSON, SQL Inserts + formatted vs raw export value mode
+    const rawTsv = rowsToTsv(cols, rows, "raw");
+    expect(rawTsv).toContain("Core | API\t12400\t0.75\tline1\\nline2");
+
+    const fmtJson = JSON.parse(rowsToJson(cols, rows, "formatted")) as Array<Record<string, unknown>>;
+    expect(fmtJson[0]).toMatchObject({ Service: "Core | API", Revenue: "$12,400", "Win%": "75%" });
+
+    const rawJson = JSON.parse(rowsToJson(cols, rows, "raw")) as Array<Record<string, unknown>>;
+    expect(rawJson[0]).toMatchObject({ name: "Core | API", revenue: 12400, winRate: 0.75 });
+
+    const sqlRaw = rowsToSqlInserts(cols, rows, "Service Metrics", "raw");
+    expect(sqlRaw).toContain(
+      'INSERT INTO "Service_Metrics" ("name", "revenue", "winRate", "note") VALUES (\'Core | API\', 12400, 0.75, \'line1\nline2\');',
+    );
   });
 
   it("parses grouped scatter points without summing identical X coordinates", () => {
@@ -203,6 +228,22 @@ describe("markdown, csv, svg, and png export", () => {
     expect(mdRes.ok).toBe(true);
     expect(mdRes.filePath?.endsWith(".md")).toBe(true);
     expect(await readFile(mdRes.filePath!, "utf8")).toContain("| x | 1 |");
+
+    const sqlRes = await handler({
+      format: "sql",
+      title: "Metrics SQL",
+      content: 'INSERT INTO "t" ("a") VALUES (1);',
+    });
+    expect(sqlRes.ok).toBe(true);
+    expect(sqlRes.filePath?.endsWith(".sql")).toBe(true);
+
+    const tsvRes = await handler({
+      format: "tsv",
+      title: "Metrics TSV",
+      content: "a\tb\n1\t2\n",
+    });
+    expect(tsvRes.ok).toBe(true);
+    expect(tsvRes.filePath?.endsWith(".tsv")).toBe(true);
 
     const graph = layoutGraph({
       nodes: [

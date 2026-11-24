@@ -1,3 +1,7 @@
+/**
+ * Standalone SVG serializer for charts and interactive graphs, adapted from Beluga
+ * (https://github.com/beluga-labs/beluga) for clean vector copy and PNG rasterization.
+ */
 import type { GraphLayoutResult, PositionedNode } from "./graph-layout";
 import { truncateVisualText, visualTextUnits } from "./query-engine";
 import type { ChartKind } from "./view-schema";

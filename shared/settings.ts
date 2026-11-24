@@ -8,6 +8,7 @@ export const pluginSettings = defineSettings({
   schema: z.object({
     enablePromptInjection: z.boolean().default(true),
     enableShowViewTool: z.boolean().default(true),
+    installGlobalSkills: z.boolean().default(true),
     upgradeMarkdownTables: z.boolean().default(true),
     allowFileSource: z.boolean().default(true),
     allowSqliteSource: z.boolean().default(true),

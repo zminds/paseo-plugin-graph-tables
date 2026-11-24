@@ -1,3 +1,7 @@
+/**
+ * Web-only SVG chart, interactive React Flow-style graph canvas, and Retina PNG
+ * rasterizer, re-implemented after Beluga (https://github.com/beluga-labs/beluga).
+ */
 import type { PluginTheme } from "@getpaseo/plugin";
 import { createElement, type ReactElement, type ReactNode, useId, useRef, useState } from "react";
 import { Platform } from "react-native";

@@ -1,3 +1,7 @@
+/**
+ * Interactive data table view with sorting, filtering, inline accordion row details,
+ * and Markdown/CSV/TSV/JSON/SQL export, adapted from Beluga (https://github.com/beluga-labs/beluga).
+ */
 import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Icon, TextInput, copyText, useToast } from "@getpaseo/plugin/client/ui";
@@ -6,7 +10,15 @@ import { Pressable, ScrollView, Text, View, type LayoutChangeEvent } from "react
 import { formatCellValue, visualTextUnits, type DataRow } from "../shared/query-engine";
 import { exportViewRpc } from "../shared/rpc";
 import type { ColumnSpec } from "../shared/view-schema";
-import { rowsToCsv, rowsToMarkdownTable } from "./format";
+import { ActionPopoverMenu, IconPillButton } from "./action-menu";
+import {
+  rowsToCsv,
+  rowsToJson,
+  rowsToMarkdownTable,
+  rowsToSqlInserts,
+  rowsToTsv,
+  type ExportValueMode,
+} from "./format";
 
 export interface TableViewProps {
   columns: readonly ColumnSpec[];
@@ -25,9 +37,13 @@ export interface TableViewProps {
   compact: boolean;
   title?: string;
   viewId?: string;
+  onExpand?(): void;
+  onToggleChart?(): void;
+  showChartToggle?: boolean;
+  specJson?: string;
 }
 
-const INDICATOR_COL_WIDTH = 30;
+const INDICATOR_COL_WIDTH = 22;
 
 function estimateColumnWidth(col: ColumnSpec, rows: readonly DataRow[]): number {
   if (col.width) return col.width;
@@ -37,7 +53,7 @@ function estimateColumnWidth(col: ColumnSpec, rows: readonly DataRow[]): number 
     return Math.max(max, Math.min(44, visualTextUnits(formatted)));
   }, 0);
   const units = Math.max(headerUnits, maxCellUnits, 6);
-  return Math.min(320, Math.max(88, Math.round(units * 8 + 24)));
+  return Math.min(320, Math.max(88, Math.round(units * 7.8 + 22)));
 }
 
 function badgeToneColor(raw: string, theme: PluginTheme): string {
@@ -52,6 +68,21 @@ function badgeToneColor(raw: string, theme: PluginTheme): string {
     return theme.colors.statusSuccess;
   }
   return theme.colors.accent;
+}
+
+function buildRawSamplePreview(columns: readonly ColumnSpec[], rows: readonly DataRow[]): string {
+  const first = rows[0];
+  if (!first) return "保留原始字段值";
+  const samples: string[] = [];
+  for (const col of columns) {
+    const raw = first[col.key];
+    if (typeof raw === "number" || typeof raw === "boolean") {
+      samples.push(String(raw));
+      if (samples.length >= 2) break;
+    }
+  }
+  if (samples.length === 0) return "保留数字与布尔原始值";
+  return `原始值：${samples.join("、")}`;
 }
 
 export function TableView({
@@ -71,12 +102,19 @@ export function TableView({
   compact,
   title,
   viewId,
+  onExpand,
+  onToggleChart,
+  showChartToggle = false,
+  specJson,
 }: TableViewProps) {
   const toast = useToast();
   const exportView = useRpc(exportViewRpc);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
-  const [savingMd, setSavingMd] = useState<boolean>(false);
+  const [searchOpen, setSearchOpen] = useState<boolean>(false);
+  const [menuOpen, setMenuOpen] = useState<boolean>(false);
+  const [valueMode, setValueMode] = useState<ExportValueMode>("formatted");
+  const [exporting, setExporting] = useState<boolean>(false);
   const totalPages = Math.max(1, Math.ceil(filteredRows / Math.max(1, pageSize)));
 
   useEffect(() => {
@@ -95,7 +133,11 @@ export function TableView({
       const extra = available - sum;
       return baseColWidths.map((w, idx) =>
         idx === baseColWidths.length - 1
-          ? Math.floor(w + extra - baseColWidths.slice(0, -1).reduce((s, bw) => s + Math.floor((extra * bw) / sum), 0))
+          ? Math.floor(
+              w +
+                extra -
+                baseColWidths.slice(0, -1).reduce((s, bw) => s + Math.floor((extra * bw) / sum), 0),
+            )
           : w + Math.floor((extra * w) / sum),
       );
     }
@@ -107,6 +149,8 @@ export function TableView({
     [colWidths],
   );
 
+  const rawSamplePreview = useMemo(() => buildRawSamplePreview(columns, rows), [columns, rows]);
+
   const onLayout = (event: LayoutChangeEvent) => {
     const w = Math.floor(event.nativeEvent.layout.width);
     if (w > 0 && Math.abs(w - containerWidth) > 2) setContainerWidth(w);
@@ -115,49 +159,39 @@ export function TableView({
   const styles = useMemo(
     () => ({
       toolbar: {
+        position: "relative" as const,
         flexDirection: "row" as const,
         alignItems: "center" as const,
         justifyContent: "space-between" as const,
         gap: 8,
-        paddingHorizontal: compact ? 10 : 12,
-        paddingVertical: 8,
+        paddingHorizontal: compact ? 8 : 10,
+        paddingVertical: 5,
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
+        backgroundColor: theme.colors.surface0,
       },
       searchBox: {
         flex: 1,
         flexDirection: "row" as const,
         alignItems: "center" as const,
         gap: 6,
+        height: 26,
         paddingHorizontal: 8,
-        paddingVertical: 4,
         borderRadius: 6,
         borderWidth: 1,
         borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface2,
-        maxWidth: 260,
+        backgroundColor: theme.colors.surface1,
+        maxWidth: 240,
       },
       searchInput: {
         flex: 1,
-        fontSize: 12,
+        fontSize: 11.5,
         color: theme.colors.foreground,
-        paddingVertical: 2,
+        paddingVertical: 0,
       },
-      csvButton: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 4,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface2,
-      },
-      csvText: { fontSize: 11, color: theme.colors.foregroundMuted },
       headerRow: {
         flexDirection: "row" as const,
-        backgroundColor: theme.colors.surface2,
+        backgroundColor: theme.colors.surface0,
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
       },
@@ -165,22 +199,18 @@ export function TableView({
         width: INDICATOR_COL_WIDTH,
         alignItems: "center" as const,
         justifyContent: "center" as const,
-        borderRightWidth: 1,
-        borderRightColor: theme.colors.border,
       },
       headerCell: {
         flexDirection: "row" as const,
         alignItems: "center" as const,
         gap: 4,
         paddingHorizontal: 10,
-        paddingVertical: 8,
-        borderRightWidth: 1,
-        borderRightColor: theme.colors.border,
+        paddingVertical: 7,
       },
       headerText: {
         fontSize: 11.5,
-        fontWeight: "700" as const,
-        color: theme.colors.foreground,
+        fontWeight: "500" as const,
+        color: theme.colors.foregroundMuted,
         flexShrink: 1,
       },
       row: {
@@ -188,96 +218,88 @@ export function TableView({
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
       },
-      rowAlt: {
-        backgroundColor: theme.colors.surface0,
-      },
       rowSelected: {
         backgroundColor: theme.colors.surface2,
-        borderLeftWidth: 3,
-        borderLeftColor: theme.colors.accent,
       },
       cell: {
         paddingHorizontal: 10,
-        paddingVertical: 8,
+        paddingVertical: 7,
         justifyContent: "center" as const,
-        borderRightWidth: 1,
-        borderRightColor: theme.colors.border,
       },
       cellText: {
-        fontSize: 12.5,
+        fontSize: 12,
+        lineHeight: 17,
         color: theme.colors.foreground,
       },
       monoText: {
-        fontSize: 12,
+        fontSize: 11.5,
         fontFamily: "monospace",
         color: theme.colors.foreground,
       },
       linkText: {
-        fontSize: 12.5,
+        fontSize: 12,
         color: theme.colors.accent,
         textDecorationLine: "underline" as const,
       },
-      inspector: {
-        margin: compact ? 8 : 10,
+      inlineBand: {
+        backgroundColor: theme.colors.surface1,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+        paddingHorizontal: compact ? 10 : 14,
+        paddingVertical: 8,
+      },
+      inlineCard: {
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: theme.colors.accent,
+        borderColor: theme.colors.border,
         backgroundColor: theme.colors.surface0,
-        overflow: "hidden" as const,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        gap: 5,
       },
-      inspectorHeader: {
+      inlineRow: {
         flexDirection: "row" as const,
-        alignItems: "center" as const,
-        justifyContent: "space-between" as const,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        backgroundColor: theme.colors.surface2,
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.border,
-        gap: 8,
+        alignItems: "flex-start" as const,
+        gap: 12,
       },
-      inspectorTitle: {
-        fontSize: 12,
-        fontWeight: "700" as const,
-        color: theme.colors.foreground,
-      },
-      inspectorBody: {
-        padding: 10,
-        gap: 8,
-      },
-      inspectorField: {
-        paddingBottom: 8,
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.border,
-        gap: 4,
-      },
-      inspectorFieldHead: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        justifyContent: "space-between" as const,
-      },
-      inspectorFieldLabel: {
-        fontSize: 11,
-        fontWeight: "700" as const,
+      inlineKey: {
+        width: compact ? 84 : 132,
+        fontSize: 11.5,
+        lineHeight: 17,
         color: theme.colors.foregroundMuted,
       },
-      inspectorFieldVal: {
-        fontSize: 13,
+      inlineVal: {
+        fontSize: 11.5,
+        lineHeight: 17,
         color: theme.colors.foreground,
+      },
+      inlineMono: {
+        fontSize: 11,
+        lineHeight: 17,
+        fontFamily: "monospace",
+        color: theme.colors.foreground,
+      },
+      inlineLink: {
+        fontSize: 11.5,
+        lineHeight: 17,
+        color: theme.colors.accent,
+        textDecorationLine: "underline" as const,
       },
       footer: {
         flexDirection: "row" as const,
         alignItems: "center" as const,
         justifyContent: "space-between" as const,
         paddingHorizontal: compact ? 10 : 12,
-        paddingVertical: 8,
+        paddingVertical: 6,
         backgroundColor: theme.colors.surface0,
+        borderBottomLeftRadius: 9,
+        borderBottomRightRadius: 9,
       },
-      metaText: { fontSize: 11.5, color: theme.colors.foregroundMuted },
-      pagerRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+      metaText: { fontSize: 11, color: theme.colors.foregroundMuted },
+      pagerRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4 },
       pagerBtn: {
-        paddingHorizontal: 8,
-        paddingVertical: 4,
+        paddingHorizontal: 7,
+        paddingVertical: 3,
         borderRadius: 6,
         borderWidth: 1,
         borderColor: theme.colors.border,
@@ -294,45 +316,51 @@ export function TableView({
     else onSortChange(key);
   };
 
-  const handleCopyCsv = async () => {
-    try {
-      await copyText(rowsToCsv(columns, rows));
-      toast.show("Copied visible rows as CSV", { variant: "success" });
-    } catch {
-      toast.error("Failed to copy CSV");
+  const serializeFormat = (fmt: "markdown" | "csv" | "tsv" | "json" | "sql"): string => {
+    switch (fmt) {
+      case "markdown":
+        return rowsToMarkdownTable(columns, rows, valueMode);
+      case "csv":
+        return rowsToCsv(columns, rows, valueMode);
+      case "tsv":
+        return rowsToTsv(columns, rows, valueMode);
+      case "json":
+        return rowsToJson(columns, rows, valueMode);
+      case "sql":
+        return rowsToSqlInserts(columns, rows, title ?? "exported_view", valueMode);
     }
   };
 
-  const handleCopyMarkdown = async () => {
+  const handleCopyFormat = async (fmt: "markdown" | "csv" | "tsv" | "json" | "sql", label: string) => {
     try {
-      await copyText(rowsToMarkdownTable(columns, rows));
-      toast.show("Copied visible rows as Markdown", { variant: "success" });
+      await copyText(serializeFormat(fmt));
+      toast.show(`已拷贝为 ${label}`, { variant: "success" });
     } catch {
-      toast.error("Failed to copy Markdown");
+      toast.error(`拷贝 ${label} 失败`);
     }
   };
 
-  const handleSaveMarkdown = async () => {
-    if (savingMd) return;
-    setSavingMd(true);
+  const handleSaveFormat = async (fmt: "markdown" | "csv" | "tsv" | "json" | "sql", label: string) => {
+    if (exporting) return;
+    setExporting(true);
     try {
-      const md = rowsToMarkdownTable(columns, rows);
+      const content = serializeFormat(fmt);
       const res = await exportView({
-        format: "markdown",
+        format: fmt,
         title: title ?? "table",
         viewId,
-        content: md,
+        content,
       });
       if (res.ok && res.filePath) {
         await copyText(res.filePath).catch(() => {});
-        toast.show(`Saved ${res.filePath}`, { variant: "success" });
+        toast.show(`已保存 ${res.filePath}`, { variant: "success" });
       } else {
-        toast.error(res.error ?? "Failed to save Markdown");
+        toast.error(res.error ?? `保存 ${label} 失败`);
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Export failed");
+      toast.error(error instanceof Error ? error.message : "导出失败");
     } finally {
-      setSavingMd(false);
+      setExporting(false);
     }
   };
 
@@ -345,12 +373,14 @@ export function TableView({
     }
   };
 
+  const showSearchInput = !hasExplicitSearchControl && (searchOpen || search.length > 0 || rows.length > 8);
+
   return (
-    <View onLayout={onLayout}>
-      <View style={styles.toolbar}>
-        {!hasExplicitSearchControl ? (
+    <View onLayout={onLayout} style={{ zIndex: menuOpen ? 40 : 1 }}>
+      <View style={[styles.toolbar, { zIndex: menuOpen ? 60 : 2 }]}>
+        {showSearchInput ? (
           <View style={styles.searchBox}>
-            <Icon name="Search" size={13} color={theme.colors.foregroundMuted} />
+            <Icon name="Search" size={12} color={theme.colors.foregroundMuted} />
             <TextInput
               value={search}
               onChangeText={onSearchChange}
@@ -360,38 +390,132 @@ export function TableView({
             />
             {search ? (
               <Pressable accessibilityRole="button" onPress={() => onSearchChange("")}>
-                <Icon name="X" size={13} color={theme.colors.foregroundMuted} />
+                <Icon name="X" size={12} color={theme.colors.foregroundMuted} />
+              </Pressable>
+            ) : rows.length <= 8 ? (
+              <Pressable accessibilityRole="button" onPress={() => setSearchOpen(false)}>
+                <Icon name="X" size={12} color={theme.colors.foregroundMuted} />
               </Pressable>
             ) : null}
           </View>
         ) : (
           <View />
         )}
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => void handleCopyCsv()}
-            style={styles.csvButton}
-          >
-            <Icon name="Copy" size={12} color={theme.colors.foregroundMuted} />
-            <Text style={styles.csvText}>CSV</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => void handleCopyMarkdown()}
-            style={styles.csvButton}
-          >
-            <Icon name="Copy" size={12} color={theme.colors.foregroundMuted} />
-            <Text style={styles.csvText}>MD</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            disabled={savingMd}
-            onPress={() => void handleSaveMarkdown()}
-            style={[styles.csvButton, savingMd ? { opacity: 0.5 } : null]}
-          >
-            <Text style={styles.csvText}>Save .md</Text>
-          </Pressable>
+
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+          {!hasExplicitSearchControl && !showSearchInput ? (
+            <IconPillButton
+              icon="Search"
+              tooltip="筛选行"
+              theme={theme}
+              onPress={() => setSearchOpen(true)}
+            />
+          ) : null}
+          {showChartToggle && onToggleChart ? (
+            <IconPillButton
+              icon="ChartNoAxesColumn"
+              tooltip="切换为图表"
+              theme={theme}
+              onPress={onToggleChart}
+            />
+          ) : null}
+          <IconPillButton
+            icon="Copy"
+            tooltip="拷贝表格 (Markdown)"
+            theme={theme}
+            onPress={() => void handleCopyFormat("markdown", "Markdown")}
+          />
+          {onExpand ? (
+            <IconPillButton
+              icon="Maximize2"
+              tooltip="在完整窗口中打开"
+              theme={theme}
+              onPress={onExpand}
+            />
+          ) : null}
+          <View style={{ position: "relative" }}>
+            <IconPillButton
+              icon="MoreHorizontal"
+              active={menuOpen}
+              tooltip="更多操作"
+              tooltipAlign="right"
+              theme={theme}
+              onPress={() => setMenuOpen((o) => !o)}
+            />
+            <ActionPopoverMenu
+              open={menuOpen}
+              compact={compact}
+              theme={theme}
+              onClose={() => setMenuOpen(false)}
+              entries={[
+                ...(onExpand
+                  ? [
+                      {
+                        id: "expand",
+                        icon: "Maximize2",
+                        label: "在完整窗口中打开",
+                        onPress: onExpand,
+                      },
+                    ]
+                  : []),
+                {
+                  id: "copy-table",
+                  icon: "Copy",
+                  label: "拷贝表格",
+                  onPress: () => void handleCopyFormat("markdown", "Markdown"),
+                },
+                {
+                  kind: "submenu" as const,
+                  id: "copy-as",
+                  icon: "Copy",
+                  label: "拷贝为",
+                  children: [
+                    { id: "c-md", label: "Markdown", onPress: () => void handleCopyFormat("markdown", "Markdown") },
+                    { id: "c-csv", label: "CSV", onPress: () => void handleCopyFormat("csv", "CSV") },
+                    { id: "c-tsv", label: "TSV", onPress: () => void handleCopyFormat("tsv", "TSV") },
+                    { id: "c-json", label: "JSON", onPress: () => void handleCopyFormat("json", "JSON") },
+                    { id: "c-sql", label: "SQL Inserts", onPress: () => void handleCopyFormat("sql", "SQL Inserts") },
+                  ],
+                  footerToggle: {
+                    label: "按显示的值",
+                    subtitle: rawSamplePreview,
+                    checked: valueMode === "formatted",
+                    onToggle: () => setValueMode((m) => (m === "formatted" ? "raw" : "formatted")),
+                  },
+                },
+                {
+                  kind: "submenu" as const,
+                  id: "save-as",
+                  icon: "Download",
+                  label: "保存为",
+                  children: [
+                    { id: "s-md", label: "Markdown...", onPress: () => void handleSaveFormat("markdown", "Markdown") },
+                    { id: "s-csv", label: "CSV...", onPress: () => void handleSaveFormat("csv", "CSV") },
+                    { id: "s-tsv", label: "TSV...", onPress: () => void handleSaveFormat("tsv", "TSV") },
+                    { id: "s-json", label: "JSON...", onPress: () => void handleSaveFormat("json", "JSON") },
+                    { id: "s-sql", label: "SQL Inserts...", onPress: () => void handleSaveFormat("sql", "SQL Inserts") },
+                  ],
+                  footerToggle: {
+                    label: "按显示的值",
+                    subtitle: rawSamplePreview,
+                    checked: valueMode === "formatted",
+                    onToggle: () => setValueMode((m) => (m === "formatted" ? "raw" : "formatted")),
+                  },
+                },
+                ...(specJson
+                  ? [
+                      { kind: "divider" as const, id: "div-spec" },
+                      {
+                        id: "copy-spec",
+                        icon: "Code",
+                        label: "拷贝视图定义",
+                        onPress: () => void handleCopyText("视图定义", specJson),
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          </View>
         </View>
       </View>
 
@@ -424,9 +548,9 @@ export function TableView({
                       {col.label ?? col.key}
                     </Text>
                     {isAsc ? (
-                      <Icon name="ArrowUp" size={12} color={theme.colors.accent} />
+                      <Icon name="ArrowUp" size={11} color={theme.colors.accent} />
                     ) : isDesc ? (
-                      <Icon name="ArrowDown" size={12} color={theme.colors.accent} />
+                      <Icon name="ArrowDown" size={11} color={theme.colors.accent} />
                     ) : null}
                   </Pressable>
                 );
@@ -445,23 +569,20 @@ export function TableView({
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`Inspect row ${rIdx + 1}`}
-                      onPress={() => setSelectedRowIndex(isSelected ? null : rIdx)}
+                      onPress={() => {
+                        setMenuOpen(false);
+                        setSelectedRowIndex(isSelected ? null : rIdx);
+                      }}
                       style={[
                         styles.row,
-                        rIdx % 2 === 1 ? styles.rowAlt : null,
                         isSelected ? styles.rowSelected : null,
                         isSelected ? { borderBottomWidth: 0 } : null,
                       ]}
                     >
-                      <View
-                        style={[
-                          styles.indicatorCell,
-                          isSelected ? { width: INDICATOR_COL_WIDTH - 3 } : null,
-                        ]}
-                      >
+                      <View style={styles.indicatorCell}>
                         <Icon
                           name={isSelected ? "ChevronDown" : "ChevronRight"}
-                          size={13}
+                          size={11}
                           color={isSelected ? theme.colors.accent : theme.colors.foregroundMuted}
                         />
                       </View>
@@ -490,7 +611,7 @@ export function TableView({
                               <View
                                 style={{
                                   paddingHorizontal: 7,
-                                  paddingVertical: 2,
+                                  paddingVertical: 1.5,
                                   borderRadius: 999,
                                   borderWidth: 1,
                                   borderColor: tone,
@@ -520,8 +641,8 @@ export function TableView({
                             >
                               <View
                                 style={{
-                                  width: 12,
-                                  height: 12,
+                                  width: 11,
+                                  height: 11,
                                   borderRadius: 3,
                                   borderWidth: 1,
                                   borderColor: theme.colors.border,
@@ -586,119 +707,31 @@ export function TableView({
                       })}
                     </Pressable>
                     {isSelected ? (
-                      <View
-                        style={{
-                          width: totalTableWidth,
-                          backgroundColor: theme.colors.surface0,
-                          borderLeftWidth: 3,
-                          borderLeftColor: theme.colors.accent,
-                          borderBottomWidth: 1,
-                          borderBottomColor: theme.colors.border,
-                          paddingHorizontal: compact ? 10 : 12,
-                          paddingVertical: 10,
-                        }}
-                      >
+                      <View style={[styles.inlineBand, { width: totalTableWidth }]}>
                         <View
                           style={[
-                            styles.inspector,
+                            styles.inlineCard,
                             {
-                              margin: 0,
-                              borderColor: theme.colors.border,
-                              backgroundColor: theme.colors.surface1,
                               width:
                                 containerWidth > 0
                                   ? Math.max(
                                       220,
                                       Math.min(totalTableWidth, containerWidth) -
-                                        (compact ? 24 : 28),
+                                        (compact ? 20 : 28),
                                     )
                                   : undefined,
                             },
                           ]}
                         >
-                          <View style={styles.inspectorHeader}>
-                            <Text style={styles.inspectorTitle}>
-                              Row {rIdx + 1} / {rows.length}
-                            </Text>
-                            <View style={styles.pagerRow}>
-                              <Pressable
-                                accessibilityRole="button"
-                                disabled={rIdx <= 0}
-                                onPress={() => setSelectedRowIndex(Math.max(0, rIdx - 1))}
-                                style={[styles.pagerBtn, rIdx <= 0 ? { opacity: 0.4 } : null]}
-                              >
-                                <Icon name="ChevronLeft" size={13} color={theme.colors.foreground} />
-                              </Pressable>
-                              <Pressable
-                                accessibilityRole="button"
-                                disabled={rIdx >= rows.length - 1}
-                                onPress={() =>
-                                  setSelectedRowIndex(Math.min(rows.length - 1, rIdx + 1))
-                                }
-                                style={[
-                                  styles.pagerBtn,
-                                  rIdx >= rows.length - 1 ? { opacity: 0.4 } : null,
-                                ]}
-                              >
-                                <Icon
-                                  name="ChevronRight"
-                                  size={13}
-                                  color={theme.colors.foreground}
-                                />
-                              </Pressable>
-                              <Pressable
-                                accessibilityRole="button"
-                                onPress={() =>
-                                  void handleCopyText("row JSON", JSON.stringify(row, null, 2))
-                                }
-                                style={styles.csvButton}
-                              >
-                                <Icon
-                                  name="Copy"
-                                  size={11}
-                                  color={theme.colors.foregroundMuted}
-                                />
-                                <Text style={styles.csvText}>JSON</Text>
-                              </Pressable>
-                              <Pressable
-                                accessibilityRole="button"
-                                onPress={() => setSelectedRowIndex(null)}
-                                style={styles.pagerBtn}
-                              >
-                                <Icon name="X" size={13} color={theme.colors.foregroundMuted} />
-                              </Pressable>
-                            </View>
-                          </View>
-                          <View style={styles.inspectorBody}>
-                            {columns.map((col, idx) => {
-                              const raw = row[col.key];
-                              const formatted = formatCellValue(raw, col.type);
-                              const isLast = idx === columns.length - 1;
-                              return (
-                                <View
-                                  key={`ins-${col.key}`}
-                                  style={[
-                                    styles.inspectorField,
-                                    isLast ? { borderBottomWidth: 0, paddingBottom: 0 } : null,
-                                  ]}
-                                >
-                                  <View style={styles.inspectorFieldHead}>
-                                    <Text style={styles.inspectorFieldLabel}>
-                                      {col.label ?? col.key}
-                                    </Text>
-                                    <Pressable
-                                      accessibilityRole="button"
-                                      onPress={() =>
-                                        void handleCopyText(col.label ?? col.key, formatted)
-                                      }
-                                    >
-                                      <Icon
-                                        name="Copy"
-                                        size={11}
-                                        color={theme.colors.foregroundMuted}
-                                      />
-                                    </Pressable>
-                                  </View>
+                          {columns.map((col) => {
+                            const raw = row[col.key];
+                            const formatted = formatCellValue(raw, col.type);
+                            return (
+                              <View key={`ins-${col.key}`} style={styles.inlineRow}>
+                                <Text numberOfLines={1} style={styles.inlineKey}>
+                                  {col.label ?? col.key}
+                                </Text>
+                                <View style={{ flex: 1 }}>
                                   {col.type === "url" &&
                                   typeof raw === "string" &&
                                   /^https?:\/\//i.test(raw) ? (
@@ -706,23 +739,23 @@ export function TableView({
                                       accessibilityRole="link"
                                       onPress={() => void openExternalUrl(raw)}
                                     >
-                                      <Text style={styles.linkText}>{raw}</Text>
+                                      <Text style={styles.inlineLink}>{raw}</Text>
                                     </Pressable>
                                   ) : col.type === "color" && typeof raw === "string" ? (
                                     <View
-                                      style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+                                      style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
                                     >
                                       <View
                                         style={{
-                                          width: 14,
-                                          height: 14,
-                                          borderRadius: 4,
+                                          width: 12,
+                                          height: 12,
+                                          borderRadius: 3,
                                           borderWidth: 1,
                                           borderColor: theme.colors.border,
                                           backgroundColor: raw,
                                         }}
                                       />
-                                      <Text selectable style={styles.monoText}>
+                                      <Text selectable style={styles.inlineMono}>
                                         {raw}
                                       </Text>
                                     </View>
@@ -731,17 +764,31 @@ export function TableView({
                                       selectable
                                       style={
                                         col.type === "code" || col.type === "path"
-                                          ? styles.monoText
-                                          : styles.inspectorFieldVal
+                                          ? styles.inlineMono
+                                          : styles.inlineVal
                                       }
                                     >
                                       {formatted}
                                     </Text>
                                   )}
                                 </View>
-                              );
-                            })}
-                          </View>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Copy ${col.label ?? col.key}`}
+                                  onPress={() =>
+                                    void handleCopyText(col.label ?? col.key, formatted)
+                                  }
+                                  style={{ padding: 2, opacity: 0.55 }}
+                                >
+                                  <Icon
+                                    name="Copy"
+                                    size={11}
+                                    color={theme.colors.foregroundMuted}
+                                  />
+                                </Pressable>
+                              </View>
+                            );
+                          })}
                         </View>
                       </View>
                     ) : null}
@@ -756,8 +803,8 @@ export function TableView({
       <View style={styles.footer}>
         <Text style={styles.metaText}>
           {filteredRows === totalRows
-            ? `${totalRows} rows (tap a row to inspect)`
-            : `${filteredRows} of ${totalRows} rows (tap a row to inspect)`}
+            ? `${totalRows} rows`
+            : `${filteredRows} of ${totalRows} rows`}
         </Text>
         {totalPages > 1 ? (
           <View style={styles.pagerRow}>
@@ -767,7 +814,7 @@ export function TableView({
               onPress={() => onPageChange(Math.max(1, page - 1))}
               style={[styles.pagerBtn, page <= 1 ? { opacity: 0.4 } : null]}
             >
-              <Icon name="ChevronLeft" size={14} color={theme.colors.foreground} />
+              <Icon name="ChevronLeft" size={13} color={theme.colors.foreground} />
             </Pressable>
             <Text style={styles.metaText}>
               {page} / {totalPages}
@@ -778,7 +825,7 @@ export function TableView({
               onPress={() => onPageChange(Math.min(totalPages, page + 1))}
               style={[styles.pagerBtn, page >= totalPages ? { opacity: 0.4 } : null]}
             >
-              <Icon name="ChevronRight" size={14} color={theme.colors.foreground} />
+              <Icon name="ChevronRight" size={13} color={theme.colors.foreground} />
             </Pressable>
           </View>
         ) : null}

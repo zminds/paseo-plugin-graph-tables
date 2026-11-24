@@ -1,9 +1,11 @@
 ---
 name: paseo-graph-tables
-description: Render interactive tables, charts, KPI stat tiles, gantt timelines, heatmaps, calendars, and auto-layout architecture diagrams in Paseo using `show_view` or `paseo-view` / `paseo-graph` fenced blocks.
+description: Render interactive tables, charts, KPI stat tiles, gantt timelines, heatmaps, calendars, and auto-layout architecture diagrams in Paseo using `show_view` or `paseo-view` / `paseo-graph` fenced blocks. Inspired by Beluga (https://github.com/beluga-labs/beluga) and re-implemented via Paseo's plugin SDK.
 ---
 
 # Data Views & Diagrams (Paseo Graph & Tables)
+
+> Attribution: Re-implements [Beluga](https://github.com/beluga-labs/beluga)'s interactive `view` and `graph` visualization UX inside Paseo's plugin subprocess + cross-platform UI runtime.
 
 Answer the user's question in words first. Add an interactive view only when the shape of your answer is naturally one of:
 - Rows and records (`table`)
@@ -73,9 +75,9 @@ Supported `chart` types: `line`, `area`, `bar`, `pie`, `donut`, `scatter`. Use o
 ### Export & Demo Gallery
 
 Every interactive view includes built-in export controls in the client UI (saving to `~/Downloads/paseo-exports` by default, configurable in **Settings → Graph & Tables → Exports**):
-- **Tables**: `CSV` (clipboard), `MD` (GFM Markdown table to clipboard), and `Save .md` (writes `.md` via `views.export`).
+- **Tables**: Copy or Save as `Markdown`, `CSV`, `TSV`, `JSON`, or `SQL Inserts` (with formatted vs raw value toggle) and copy view definition JSON.
 - **Charts (`bar`, `line`, `area`, `pie`, `donut`, `scatter`)**: Interactive chart-type switcher, hover readouts, `Copy SVG`, `Save SVG`, and `Save PNG`.
-- **Graphs (`paseo-graph` / `beluga-graph`)**: Draggable nodes and groups, pan/zoom, animated flow toggle, step playback, `SVG` (copy), `.svg` (save), and `.png` (save).
+- **Graphs (`paseo-graph` / `beluga-graph`)**: Draggable nodes and groups, pan/zoom, animated flow toggle, step playback, `Copy JSON`, `Copy SVG`, `Save SVG`, and `Save PNG`.
 - **Demo Gallery (`/views`)**: The **Views** workspace panel includes a `Demo Gallery` tab to preview and test all view types and export workflows without an active agent session.
 
 ### Stats, Gantt, Heatmap, Calendar
