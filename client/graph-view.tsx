@@ -157,18 +157,18 @@ export function GraphView({
   layoutRef.current = layout;
 
   const targetCanvasHeight = expanded
-    ? Math.max(480, Math.min(720, Math.max(layout.height + 40, 540)))
+    ? Math.max(480, Math.min(720, Math.max(baseLayout.height + 40, 540)))
     : compact
       ? 350
-      : Math.max(380, Math.min(480, layout.height + 52));
+      : Math.max(380, Math.min(480, baseLayout.height + 52));
 
   const fittedSignatureRef = useRef<string>("");
 
   const handleFitView = useCallback(
-    (focus: ReadonlySet<string> | null = null) => {
+    (focus: ReadonlySet<string> | null = null, targetLayout = layoutRef.current) => {
       const vw = viewportSize.width || (expanded ? 860 : compact ? 340 : 680);
       const vh = viewportSize.height || targetCanvasHeight;
-      setTransform(computeFittedTransform(layoutRef.current, vw, vh, focus));
+      setTransform(computeFittedTransform(targetLayout, vw, vh, focus));
     },
     [viewportSize.width, viewportSize.height, expanded, compact, targetCanvasHeight],
   );
@@ -545,33 +545,21 @@ export function GraphView({
             }}
           >
             {hasSteps ? (
-              <>
-                <IconPillButton
-                  icon={isPlaying ? "Pause" : "Play"}
-                  active={isPlaying}
-                  tooltip={isPlaying ? "暂停导览" : "带我看一遍"}
-                  theme={theme}
-                  onPress={() => {
-                    setExportMenuOpen(false);
-                    if (isPlaying) {
-                      setIsPlaying(false);
-                    } else {
-                      if (stepIndex === null) setStepIndex(0);
-                      setIsPlaying(true);
-                    }
-                  }}
-                />
-                <IconPillButton
-                  icon="ChevronRight"
-                  tooltip="下一步"
-                  theme={theme}
-                  onPress={() => {
-                    setExportMenuOpen(false);
+              <IconPillButton
+                icon={isPlaying ? "Pause" : "Play"}
+                active={isPlaying}
+                tooltip={isPlaying ? "暂停导览" : "带我看一遍"}
+                theme={theme}
+                onPress={() => {
+                  setExportMenuOpen(false);
+                  if (isPlaying) {
                     setIsPlaying(false);
-                    setStepIndex((cur) => (cur === null ? 0 : (cur + 1) % steps.length));
-                  }}
-                />
-              </>
+                  } else {
+                    if (stepIndex === null) setStepIndex(0);
+                    setIsPlaying(true);
+                  }
+                }}
+              />
             ) : null}
 
             <IconPillButton
@@ -591,6 +579,18 @@ export function GraphView({
               onPress={() => {
                 setExportMenuOpen(false);
                 handleFitView(focusedIds);
+              }}
+            />
+
+            <IconPillButton
+              icon="RotateCw"
+              active={hasCustomOffsets}
+              tooltip="重置节点与视图"
+              theme={theme}
+              onPress={() => {
+                setExportMenuOpen(false);
+                setNodeOffsets({});
+                handleFitView(focusedIds, baseLayout);
               }}
             />
 
@@ -664,7 +664,7 @@ export function GraphView({
             ) : null}
           </View>
 
-          {/* Bottom-Left Compact Zoom & Reset Pill */}
+          {/* Bottom-Left Compact Zoom Pill */}
           <View
             style={{
               position: "absolute",
@@ -714,20 +714,6 @@ export function GraphView({
               theme={theme}
               onPress={() => zoomBy(1.16)}
             />
-            {hasCustomOffsets ? (
-              <IconPillButton
-                icon="RotateCw"
-                size={22}
-                iconSize={11}
-                active
-                tooltip="重置节点位置"
-                theme={theme}
-                onPress={() => {
-                  setNodeOffsets({});
-                  handleFitView(focusedIds);
-                }}
-              />
-            ) : null}
           </View>
 
           {/* Subtle Bottom-Right Interaction Hint */}
