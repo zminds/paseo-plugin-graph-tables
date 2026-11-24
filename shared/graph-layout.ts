@@ -1,5 +1,22 @@
 import { visualTextUnits } from "./query-engine";
-import type { GraphEdge, GraphNode, GraphSpec } from "./view-schema";
+import type { GraphEdge, GraphNode, GraphSpec, GraphStep } from "./view-schema";
+
+export type GraphLayoutInputNode = Omit<GraphNode, "type"> & {
+  type?: GraphNode["type"];
+};
+
+export type GraphLayoutInputEdge = Omit<GraphEdge, "kind"> & {
+  kind?: GraphEdge["kind"];
+};
+
+export interface GraphLayoutInput {
+  title?: string;
+  summary?: string;
+  direction?: GraphSpec["direction"];
+  nodes?: readonly GraphLayoutInputNode[];
+  edges?: readonly GraphLayoutInputEdge[];
+  steps?: readonly GraphStep[];
+}
 
 export interface PositionedNode {
   node: GraphNode;
@@ -16,6 +33,7 @@ export interface PositionedGroup {
   y: number;
   width: number;
   height: number;
+  memberIds: string[];
 }
 
 export interface PositionedEdge {
@@ -25,13 +43,11 @@ export interface PositionedEdge {
   y1: number;
   x2: number;
   y2: number;
-  cx1: number;
-  cy1: number;
-  cx2: number;
-  cy2: number;
+  svgPath: string;
   labelX: number;
   labelY: number;
   isBackEdge: boolean;
+  isBidirectional: boolean;
 }
 
 export interface GraphLayoutResult {
@@ -43,399 +59,1252 @@ export interface GraphLayoutResult {
   edges: PositionedEdge[];
 }
 
-function estimateNodeSize(node: GraphNode): { width: number; height: number } {
-  const titleUnits = visualTextUnits(node.label);
-  const subUnits = visualTextUnits(node.sublabel ?? "");
-  const maxFieldUnits = (node.fields ?? []).reduce(
-    (max, f) => Math.max(max, visualTextUnits(`${f.name}: ${f.type ?? ""}`) + 4),
-    0,
-  );
-  const maxItemUnits = (node.items ?? []).reduce(
-    (max, it) => Math.max(max, visualTextUnits(it.label) + 4),
-    0,
-  );
-  const textUnits = Math.max(
-    titleUnits,
-    subUnits * 0.88,
-    maxFieldUnits * 0.82,
-    maxItemUnits * 0.85,
-    10,
-  );
-  const width = Math.min(300, Math.max(138, Math.round(textUnits * 7.6 + 38)));
+export type NodeOffsetMap = Readonly<Record<string, { dx: number; dy: number }>>;
 
-  let height = 48;
-  if (node.sublabel) height += 16;
-  if (node.value !== undefined) height += 22;
-  if (node.fields?.length) height += Math.min(node.fields.length, 6) * 16 + 10;
-  if (node.items?.length) height += Math.min(node.items.length, 6) * 16 + 10;
-  if (node.type === "decision") height = Math.max(height, 64);
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface Point {
+  x: number;
+  y: number;
+}
+
+const LAYER_GAP_H = 104;
+const SIBLING_GAP_H = 44;
+const LAYER_GAP_V = 96;
+const SIBLING_GAP_V = 56;
+const GROUP_PAD_X = 24;
+const GROUP_PAD_TOP = 46;
+const GROUP_PAD_BOTTOM = 24;
+const OUTER_PAD = 48;
+const CORNER_RADIUS = 10;
+
+function isPillNodeType(type: GraphNode["type"]): boolean {
+  return type === "actor" || type === "client" || type === "person";
+}
+
+function estimateNodeSize(node: GraphNode): { width: number; height: number } {
+  const labelUnits = visualTextUnits(node.label || node.id);
+  const subUnits = node.sublabel ? visualTextUnits(node.sublabel) : 0;
+  const valUnits = node.value !== undefined ? visualTextUnits(String(node.value)) : 0;
+  const fieldUnits =
+    node.fields?.reduce((max, f) => Math.max(max, visualTextUnits(`${f.name} ${f.type}`)), 0) ?? 0;
+  const itemUnits = node.items?.reduce((max, item) => Math.max(max, visualTextUnits(item.label)), 0) ?? 0;
+
+  const isCompactPill =
+    isPillNodeType(node.type) &&
+    !node.fields?.length &&
+    !node.items?.length &&
+    !node.value &&
+    !node.image;
+
+  const maxUnits = Math.max(labelUnits * 1.08, subUnits * 0.94, valUnits, fieldUnits * 0.9, itemUnits * 0.94);
+
+  const width = isCompactPill
+    ? Math.max(166, Math.min(310, Math.ceil(maxUnits * 7.8) + 74))
+    : Math.max(176, Math.min(320, Math.ceil(maxUnits * 8.1) + 78));
+
+  let height = isCompactPill ? (node.sublabel ? 56 : 46) : node.sublabel ? 66 : 52;
+  if (node.value) height += 22;
+  if (node.image) height += 54;
+  if (node.fields?.length) height += Math.min(node.fields.length, 6) * 18 + 14;
+  if (node.items?.length) height += Math.min(node.items.length, 6) * 18 + 14;
 
   return { width, height };
 }
 
-export function layoutGraph(spec: GraphSpec): GraphLayoutResult {
-  const direction = spec.direction ?? "right";
-  const allNodes = spec.nodes ?? [];
-  const edges = spec.edges ?? [];
-
-  const groupNodes = allNodes.filter((n) => n.type === "group");
-  const contentNodes = allNodes.filter((n) => n.type !== "group");
-  const contentById = new Map(contentNodes.map((n) => [n.id, n]));
-
-  // Only keep edges between known content nodes
-  const validEdges = edges
-    .map((edge, index) => ({ edge, index }))
-    .filter(({ edge }) => contentById.has(edge.from) && contentById.has(edge.to));
-
-  // Cycle detection via DFS to classify back-edges
-  const outgoing = new Map<string, number[]>();
-  for (const node of contentNodes) outgoing.set(node.id, []);
-  validEdges.forEach(({ edge }, i) => {
-    outgoing.get(edge.from)?.push(i);
-  });
-
-  const visitState = new Map<string, 0 | 1 | 2>(); // 0=unvisited, 1=visiting, 2=done
-  const backEdgeIndices = new Set<number>();
-
-  const dfs = (nodeId: string) => {
-    visitState.set(nodeId, 1);
-    for (const idx of outgoing.get(nodeId) ?? []) {
-      const target = validEdges[idx].edge.to;
-      if (target === nodeId) {
-        backEdgeIndices.add(idx);
-        continue;
-      }
-      const state = visitState.get(target) ?? 0;
-      if (state === 1) {
-        backEdgeIndices.add(idx);
-      } else if (state === 0) {
-        dfs(target);
-      }
-    }
-    visitState.set(nodeId, 2);
-  };
-
-  for (const node of contentNodes) {
-    if ((visitState.get(node.id) ?? 0) === 0) dfs(node.id);
-  }
-
-  // Longest-path layering on DAG (excluding back-edges)
-  const inDegree = new Map<string, number>();
-  const dagOut = new Map<string, string[]>();
-  const dagIn = new Map<string, string[]>();
-  for (const node of contentNodes) {
-    inDegree.set(node.id, 0);
-    dagOut.set(node.id, []);
-    dagIn.set(node.id, []);
-  }
-  validEdges.forEach(({ edge }, idx) => {
-    if (backEdgeIndices.has(idx)) return;
-    dagOut.get(edge.from)!.push(edge.to);
-    dagIn.get(edge.to)!.push(edge.from);
-    inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
-  });
-
-  const queue: string[] = [];
-  const layer = new Map<string, number>();
-  for (const node of contentNodes) {
-    if ((inDegree.get(node.id) ?? 0) === 0) {
-      queue.push(node.id);
-      layer.set(node.id, 0);
-    }
-  }
-
-  let head = 0;
-  while (head < queue.length) {
-    const id = queue[head++];
-    const currentLayer = layer.get(id) ?? 0;
-    for (const next of dagOut.get(id) ?? []) {
-      layer.set(next, Math.max(layer.get(next) ?? 0, currentLayer + 1));
-      const rem = (inDegree.get(next) ?? 0) - 1;
-      inDegree.set(next, rem);
-      if (rem === 0) queue.push(next);
-    }
-  }
-  for (const node of contentNodes) {
-    if (!layer.has(node.id)) layer.set(node.id, 0);
-  }
-
-  // Group nodes by layer and reduce crossings with barycenter heuristic
-  const maxLayer = contentNodes.reduce((m, n) => Math.max(m, layer.get(n.id) ?? 0), 0);
-  const layers: GraphNode[][] = Array.from({ length: maxLayer + 1 }, () => []);
-  for (const node of contentNodes) {
-    layers[layer.get(node.id) ?? 0].push(node);
-  }
-
-  // Keep grouped siblings clustered together initially
-  for (const bucket of layers) {
-    bucket.sort((a, b) => (a.group ?? "").localeCompare(b.group ?? ""));
-  }
-
-  const orderIndex = new Map<string, number>();
-  const rebuildOrderIndex = () => {
-    layers.forEach((bucket) => {
-      bucket.forEach((n, idx) => orderIndex.set(n.id, idx));
-    });
-  };
-  rebuildOrderIndex();
-
-  for (let pass = 0; pass < 4; pass += 1) {
-    for (let l = 1; l < layers.length; l += 1) {
-      layers[l].sort((a, b) => {
-        const predsA = dagIn.get(a.id) ?? [];
-        const predsB = dagIn.get(b.id) ?? [];
-        const avgA =
-          predsA.length > 0
-            ? predsA.reduce((s, p) => s + (orderIndex.get(p) ?? 0), 0) / predsA.length
-            : orderIndex.get(a.id) ?? 0;
-        const avgB =
-          predsB.length > 0
-            ? predsB.reduce((s, p) => s + (orderIndex.get(p) ?? 0), 0) / predsB.length
-            : orderIndex.get(b.id) ?? 0;
-        return avgA - avgB;
-      });
-      rebuildOrderIndex();
-    }
-  }
-
-  const isHorizontal = direction === "right" || direction === "left";
-  const isReversed = direction === "left" || direction === "up";
-  const sizes = new Map(contentNodes.map((n) => [n.id, estimateNodeSize(n)]));
-
-  const layerGap = isHorizontal ? 76 : 64;
-  const siblingGap = isHorizontal ? 28 : 34;
-  const padX = 36;
-  const padY = 44;
-
-  // Compute primary-axis depth per layer
-  const orderedLayers = isReversed ? [...layers].reverse() : layers;
-  const layerThickness = orderedLayers.map((bucket) =>
-    bucket.reduce(
-      (max, n) => {
-        const sz = sizes.get(n.id)!;
-        return Math.max(max, isHorizontal ? sz.width : sz.height);
-      },
-      isHorizontal ? 140 : 54,
-    ),
+function rectsOverlap(a: Rect, b: Rect, pad = 0): boolean {
+  return (
+    a.x - pad < b.x + b.width + pad &&
+    a.x + a.width + pad > b.x - pad &&
+    a.y - pad < b.y + b.height + pad &&
+    a.y + a.height + pad > b.y - pad
   );
+}
 
-  const layerOffsets: number[] = [];
-  let primaryCursor = isHorizontal ? padX : padY;
-  for (let l = 0; l < orderedLayers.length; l += 1) {
-    layerOffsets.push(primaryCursor);
-    primaryCursor += layerThickness[l] + layerGap;
+function segmentIntersectsRect(a: Point, b: Point, r: Rect, pad: number): boolean {
+  const rx1 = r.x - pad;
+  const ry1 = r.y - pad;
+  const rx2 = r.x + r.width + pad;
+  const ry2 = r.y + r.height + pad;
+
+  if (Math.abs(a.x - b.x) < 0.5) {
+    // Vertical segment
+    const x = a.x;
+    const minY = Math.min(a.y, b.y);
+    const maxY = Math.max(a.y, b.y);
+    return x > rx1 && x < rx2 && maxY > ry1 && minY < ry2;
+  }
+  if (Math.abs(a.y - b.y) < 0.5) {
+    // Horizontal segment
+    const y = a.y;
+    const minX = Math.min(a.x, b.x);
+    const maxX = Math.max(a.x, b.x);
+    return y > ry1 && y < ry2 && maxX > rx1 && minX < rx2;
+  }
+  const minX = Math.min(a.x, b.x);
+  const maxX = Math.max(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxY = Math.max(a.y, b.y);
+  return maxX > rx1 && minX < rx2 && maxY > ry1 && minY < ry2;
+}
+
+function polylineIntersectsAny(points: Point[], obstacles: Rect[], pad: number): boolean {
+  for (let i = 0; i < points.length - 1; i++) {
+    for (const obs of obstacles) {
+      if (segmentIntersectsRect(points[i]!, points[i + 1]!, obs, pad)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function simplifyPolyline(points: Point[]): Point[] {
+  const deduped: Point[] = [];
+  for (const p of points) {
+    const last = deduped[deduped.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 0.5) {
+      deduped.push({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 });
+    }
+  }
+  if (deduped.length <= 2) return deduped;
+
+  const clean: Point[] = [deduped[0]!];
+  for (let i = 1; i < deduped.length - 1; i++) {
+    const prev = clean[clean.length - 1]!;
+    const curr = deduped[i]!;
+    const next = deduped[i + 1]!;
+    const collinearX = Math.abs(prev.x - curr.x) < 0.5 && Math.abs(curr.x - next.x) < 0.5;
+    const collinearY = Math.abs(prev.y - curr.y) < 0.5 && Math.abs(curr.y - next.y) < 0.5;
+    if (!collinearX && !collinearY) {
+      clean.push(curr);
+    }
+  }
+  clean.push(deduped[deduped.length - 1]!);
+  return clean;
+}
+
+function polylineToSmoothStepPath(rawPoints: Point[], radius = CORNER_RADIUS): string {
+  const pts = simplifyPolyline(rawPoints);
+  if (pts.length === 0) return "";
+  if (pts.length === 1) return `M ${pts[0]!.x} ${pts[0]!.y}`;
+  if (pts.length === 2) {
+    return `M ${pts[0]!.x} ${pts[0]!.y} L ${pts[1]!.x} ${pts[1]!.y}`;
   }
 
-  // Compute secondary-axis total extent per layer to center layers
-  const layerSpans = orderedLayers.map((bucket) => {
-    if (bucket.length === 0) return 0;
-    const sum = bucket.reduce((acc, n) => {
-      const sz = sizes.get(n.id)!;
-      return acc + (isHorizontal ? sz.height : sz.width);
-    }, 0);
-    return sum + (bucket.length - 1) * siblingGap;
-  });
-  const maxSpan = Math.max(200, ...layerSpans);
+  let d = `M ${pts[0]!.x} ${pts[0]!.y}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const prev = pts[i - 1]!;
+    const curr = pts[i]!;
+    const next = pts[i + 1]!;
 
-  const positionedNodes: PositionedNode[] = [];
-  const nodePosById = new Map<string, PositionedNode>();
+    const dx1 = curr.x - prev.x;
+    const dy1 = curr.y - prev.y;
+    const len1 = Math.hypot(dx1, dy1);
+    const dx2 = next.x - curr.x;
+    const dy2 = next.y - curr.y;
+    const len2 = Math.hypot(dx2, dy2);
 
-  orderedLayers.forEach((bucket, lIdx) => {
-    const span = layerSpans[lIdx];
-    let secondaryCursor = (isHorizontal ? padY : padX) + (maxSpan - span) / 2;
-    const pOffset = layerOffsets[lIdx];
-
-    for (const node of bucket) {
-      const sz = sizes.get(node.id)!;
-      const x = isHorizontal
-        ? pOffset + (layerThickness[lIdx] - sz.width) / 2
-        : secondaryCursor;
-      const y = isHorizontal
-        ? secondaryCursor
-        : pOffset + (layerThickness[lIdx] - sz.height) / 2;
-
-      const positioned: PositionedNode = {
-        node,
-        x,
-        y,
-        width: sz.width,
-        height: sz.height,
-        layer: layer.get(node.id) ?? 0,
-      };
-      positionedNodes.push(positioned);
-      nodePosById.set(node.id, positioned);
-      secondaryCursor += (isHorizontal ? sz.height : sz.width) + siblingGap;
-    }
-  });
-
-  // Compute group bounding boxes around member nodes
-  const positionedGroups: PositionedGroup[] = [];
-  const groupPadX = 18;
-  const groupPadTop = 32;
-  const groupPadBottom = 18;
-  let orphanGroupY = 24;
-
-  for (const groupNode of groupNodes) {
-    const members = positionedNodes.filter((n) => n.node.group === groupNode.id);
-    if (members.length === 0) {
-      positionedGroups.push({
-        node: groupNode,
-        x: padX,
-        y: orphanGroupY,
-        width: 160,
-        height: 60,
-      });
-      orphanGroupY += 76;
+    const r = Math.min(radius, len1 / 2, len2 / 2);
+    if (r < 1) {
+      d += ` L ${curr.x} ${curr.y}`;
       continue;
     }
-    const minX = Math.min(...members.map((m) => m.x)) - groupPadX;
-    const minY = Math.min(...members.map((m) => m.y)) - groupPadTop;
-    const maxX = Math.max(...members.map((m) => m.x + m.width)) + groupPadX;
-    const maxY = Math.max(...members.map((m) => m.y + m.height)) + groupPadBottom;
-    positionedGroups.push({
-      node: groupNode,
-      x: minX,
-      y: minY,
-      width: maxX - minX,
-      height: maxY - minY,
+
+    const ux1 = dx1 / len1;
+    const uy1 = dy1 / len1;
+    const ux2 = dx2 / len2;
+    const uy2 = dy2 / len2;
+
+    const pEnterX = Math.round((curr.x - ux1 * r) * 10) / 10;
+    const pEnterY = Math.round((curr.y - uy1 * r) * 10) / 10;
+    const pExitX = Math.round((curr.x + ux2 * r) * 10) / 10;
+    const pExitY = Math.round((curr.y + uy2 * r) * 10) / 10;
+
+    d += ` L ${pEnterX} ${pEnterY} Q ${curr.x} ${curr.y} ${pExitX} ${pExitY}`;
+  }
+
+  const last = pts[pts.length - 1]!;
+  d += ` L ${last.x} ${last.y}`;
+  return d;
+}
+
+function pickLabelAnchor(rawPoints: Point[], edgeOrderShift = 0): Point {
+  const pts = simplifyPolyline(rawPoints);
+  if (pts.length <= 1) return pts[0] ?? { x: 0, y: 0 };
+
+  if (pts.length === 4) {
+    // Classic 3-segment SmoothStep: place on the middle bar if long enough, else longest segment
+    const midA = pts[1]!;
+    const midB = pts[2]!;
+    const midLen = Math.hypot(midB.x - midA.x, midB.y - midA.y);
+    const seg0Len = Math.hypot(pts[1]!.x - pts[0]!.x, pts[1]!.y - pts[0]!.y);
+    const seg2Len = Math.hypot(pts[3]!.x - pts[2]!.x, pts[3]!.y - pts[2]!.y);
+    if (midLen >= Math.max(44, Math.max(seg0Len, seg2Len) * 0.45)) {
+      const t = 0.5 + edgeOrderShift * 0.14;
+      return {
+        x: midA.x + (midB.x - midA.x) * t,
+        y: midA.y + (midB.y - midA.y) * t,
+      };
+    }
+  }
+
+  let bestIdx = 0;
+  let bestScore = -1;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const len = Math.hypot(pts[i + 1]!.x - pts[i]!.x, pts[i + 1]!.y - pts[i]!.y);
+    // Slight bonus to outer bypass bar or middle segments over tiny connector stubs
+    const bonus = i > 0 && i < pts.length - 2 ? 1.25 : 1;
+    const score = len * bonus;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+
+  const a = pts[bestIdx]!;
+  const b = pts[bestIdx + 1]!;
+  const t = Math.max(0.25, Math.min(0.75, 0.5 + edgeOrderShift * 0.14));
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+  };
+}
+
+function buildGroups(
+  groupNodes: GraphNode[],
+  positionedNodes: PositionedNode[],
+  nodeDepthMap: ReadonlyMap<string, number>,
+): PositionedGroup[] {
+  const nodeMap = new Map(positionedNodes.map((n) => [n.node.id, n]));
+  const groupNodeSet = new Set(groupNodes.map((g) => g.id));
+
+  // Direct content members per group
+  const directMembers = new Map<string, string[]>();
+  for (const g of groupNodes) directMembers.set(g.id, []);
+  for (const pn of positionedNodes) {
+    if (pn.node.group && directMembers.has(pn.node.group)) {
+      directMembers.get(pn.node.group)!.push(pn.node.id);
+    }
+  }
+
+  // Child groups per group (if nested groups exist)
+  const childGroups = new Map<string, string[]>();
+  for (const g of groupNodes) childGroups.set(g.id, []);
+  for (const g of groupNodes) {
+    if (g.group && childGroups.has(g.group)) {
+      childGroups.get(g.group)!.push(g.id);
+    }
+  }
+
+  // Collect transitive content member ids per group
+  const collectMemberIds = (groupId: string, seen = new Set<string>()): string[] => {
+    if (seen.has(groupId)) return [];
+    seen.add(groupId);
+    const out = [...(directMembers.get(groupId) ?? [])];
+    for (const cg of childGroups.get(groupId) ?? []) {
+      out.push(...collectMemberIds(cg, seen));
+    }
+    return out;
+  };
+
+  // Process deeper (inner) groups before outer groups
+  const sortedGroups = [...groupNodes].sort(
+    (a, b) => (nodeDepthMap.get(b.id) ?? 0) - (nodeDepthMap.get(a.id) ?? 0),
+  );
+
+  const builtMap = new Map<string, PositionedGroup>();
+  for (const g of sortedGroups) {
+    const childIds = directMembers.get(g.id) ?? [];
+    const nestedIds = childGroups.get(g.id) ?? [];
+    const memberIds = collectMemberIds(g.id);
+
+    const rects: Rect[] = [];
+    for (const id of childIds) {
+      const pn = nodeMap.get(id);
+      if (pn) rects.push(pn);
+    }
+    for (const gid of nestedIds) {
+      const pg = builtMap.get(gid);
+      if (pg) rects.push(pg);
+    }
+
+    if (rects.length === 0) {
+      // Empty group box fallback
+      const emptyRect: PositionedGroup = {
+        node: g,
+        x: OUTER_PAD,
+        y: OUTER_PAD,
+        width: Math.max(180, visualTextUnits(g.label) * 8 + 64),
+        height: 92,
+        memberIds: [],
+      };
+      builtMap.set(g.id, emptyRect);
+      continue;
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const r of rects) {
+      if (r.x < minX) minX = r.x;
+      if (r.y < minY) minY = r.y;
+      if (r.x + r.width > maxX) maxX = r.x + r.width;
+      if (r.y + r.height > maxY) maxY = r.y + r.height;
+    }
+
+    const titleMinWidth = Math.ceil(visualTextUnits(g.label) * 7.8) + 64;
+    const contentWidth = maxX - minX + GROUP_PAD_X * 2;
+    const width = Math.max(contentWidth, titleMinWidth);
+    const extraW = Math.max(0, width - contentWidth);
+
+    builtMap.set(g.id, {
+      node: g,
+      x: minX - GROUP_PAD_X - extraW / 2,
+      y: minY - GROUP_PAD_TOP,
+      width,
+      height: maxY - minY + GROUP_PAD_TOP + GROUP_PAD_BOTTOM,
+      memberIds,
     });
   }
 
-  // Normalize coordinates if any group padding pushed coordinates < 16
-  const allBoxes = [
-    ...positionedNodes.map((n) => ({ x: n.x, y: n.y, w: n.width, h: n.height })),
-    ...positionedGroups.map((g) => ({ x: g.x, y: g.y, w: g.width, h: g.height })),
-  ];
-  const minBoundX = allBoxes.length ? Math.min(...allBoxes.map((b) => b.x)) : 0;
-  const minBoundY = allBoxes.length ? Math.min(...allBoxes.map((b) => b.y)) : 0;
-  const shiftX = minBoundX < 20 ? 20 - minBoundX : 0;
-  const shiftY = minBoundY < 20 ? 20 - minBoundY : 0;
+  // Return in original groupNodes order (outermost groups first so painters draw parent before child)
+  return groupNodes
+    .filter((g) => groupNodeSet.has(g.id))
+    .sort((a, b) => (nodeDepthMap.get(a.id) ?? 0) - (nodeDepthMap.get(b.id) ?? 0))
+    .map((g) => builtMap.get(g.id)!)
+    .filter(Boolean);
+}
 
-  if (shiftX !== 0 || shiftY !== 0) {
-    for (const n of positionedNodes) {
-      n.x += shiftX;
-      n.y += shiftY;
-    }
-    for (const g of positionedGroups) {
-      g.x += shiftX;
-      g.y += shiftY;
-    }
+function routeEdges(
+  edges: GraphEdge[],
+  positionedNodes: PositionedNode[],
+  direction: "right" | "down" | "left" | "up",
+): PositionedEdge[] {
+  const nodeMap = new Map(positionedNodes.map((n) => [n.node.id, n]));
+  const isVerticalFlow = direction === "down" || direction === "up";
+
+  // Group edges by unordered endpoint pair so opposite or parallel edges get distinct lanes
+  const pairGroups = new Map<string, number[]>();
+  edges.forEach((edge, idx) => {
+    const key = edge.from <= edge.to ? `${edge.from}::${edge.to}` : `${edge.to}::${edge.from}`;
+    const list = pairGroups.get(key);
+    if (list) list.push(idx);
+    else pairGroups.set(key, [idx]);
+  });
+
+  // Compute global node bounding hull for outer bypass lanes
+  let globalMinX = Number.POSITIVE_INFINITY;
+  let globalMinY = Number.POSITIVE_INFINITY;
+  let globalMaxX = Number.NEGATIVE_INFINITY;
+  let globalMaxY = Number.NEGATIVE_INFINITY;
+  for (const pn of positionedNodes) {
+    if (pn.x < globalMinX) globalMinX = pn.x;
+    if (pn.y < globalMinY) globalMinY = pn.y;
+    if (pn.x + pn.width > globalMaxX) globalMaxX = pn.x + pn.width;
+    if (pn.y + pn.height > globalMaxY) globalMaxY = pn.y + pn.height;
   }
 
-  const positionedEdges: PositionedEdge[] = validEdges.map(({ edge, index }, idx) => {
-    const fromBox = nodePosById.get(edge.from)!;
-    const toBox = nodePosById.get(edge.to)!;
-    const isBack = backEdgeIndices.has(idx);
+  let bypassCount = 0;
+
+  return edges.map((edge, idx) => {
+    const src = nodeMap.get(edge.from);
+    const dst = nodeMap.get(edge.to);
+    if (!src || !dst) {
+      return {
+        edge,
+        index: idx,
+        x1: 0,
+        y1: 0,
+        x2: 0,
+        y2: 0,
+        svgPath: "M 0 0 L 0 0",
+        labelX: 0,
+        labelY: 0,
+        isBackEdge: false,
+        isBidirectional: false,
+      };
+    }
+
+    // Self-loop edge
+    if (src.node.id === dst.node.id) {
+      const x1 = src.x + src.width * 0.72;
+      const y1 = src.y;
+      const x2 = src.x + src.width * 0.28;
+      const y2 = src.y;
+      const loopY = src.y - 34;
+      const pts: Point[] = [
+        { x: x1, y: y1 },
+        { x: x1, y: loopY },
+        { x: x2, y: loopY },
+        { x: x2, y: y2 },
+      ];
+      return {
+        edge,
+        index: idx,
+        x1,
+        y1,
+        x2,
+        y2,
+        svgPath: polylineToSmoothStepPath(pts),
+        labelX: (x1 + x2) / 2,
+        labelY: loopY,
+        isBackEdge: true,
+        isBidirectional: false,
+      };
+    }
+
+    const pairKey = edge.from <= edge.to ? `${edge.from}::${edge.to}` : `${edge.to}::${edge.from}`;
+    const siblings = pairGroups.get(pairKey) ?? [idx];
+    const hasOpposite = siblings.some((sIdx) => {
+      const other = edges[sIdx]!;
+      return other.from === edge.to && other.to === edge.from;
+    });
+    const isBidirectional = hasOpposite || siblings.length > 1;
+    const siblingRank = siblings.indexOf(idx);
+
+    const srcCx = src.x + src.width / 2;
+    const srcCy = src.y + src.height / 2;
+    const dstCx = dst.x + dst.width / 2;
+    const dstCy = dst.y + dst.height / 2;
+
+    // Detect whether edge runs opposite to nominal graph flow
+    const isBackEdge =
+      (direction === "right" && dstCx < srcCx - 16) ||
+      (direction === "left" && dstCx > srcCx + 16) ||
+      (direction === "down" && dstCy < srcCy - 16) ||
+      (direction === "up" && dstCy > srcCy + 16) ||
+      (direction === "right" && dst.layer < src.layer) ||
+      (direction === "left" && dst.layer < src.layer) ||
+      (direction === "down" && dst.layer < src.layer) ||
+      (direction === "up" && dst.layer < src.layer);
+
+    // Parallel / opposite edge lateral lane separation
+    let portOffset = 0;
+    if (siblings.length > 1) {
+      if (hasOpposite && siblings.length === 2) {
+        // Keep forward on -lane, return on +lane (in canonical sorted direction)
+        const forwardSign = edge.from <= edge.to ? -1 : 1;
+        const maxLane = Math.min(src.width, dst.width, src.height, dst.height) * 0.34;
+        portOffset = forwardSign * Math.min(28, Math.max(18, maxLane));
+      } else {
+        const spread = 24;
+        const centered = siblingRank - (siblings.length - 1) / 2;
+        const maxLane = Math.min(src.width, dst.width, src.height, dst.height) * 0.36;
+        portOffset = Math.max(-maxLane, Math.min(maxLane, centered * spread));
+      }
+    }
+
+    const obstacles: Rect[] = positionedNodes.filter(
+      (pn) => pn.node.id !== src.node.id && pn.node.id !== dst.node.id,
+    );
+
+    const isReverseReturnOnOppositeSide =
+      isBidirectional && hasOpposite && isBackEdge && !isVerticalFlow && Math.abs(srcCy - dstCy) < 24;
+
+    if (!isVerticalFlow) {
+      // Horizontal flows ("right" | "left")
+      const forwardRight = dstCx >= srcCx;
+      const forwardFlow = direction === "right" ? dstCx >= srcCx - 10 : dstCx <= srcCx + 10;
+
+      let x1: number;
+      let y1: number;
+      let x2: number;
+      let y2: number;
+
+      if (forwardFlow) {
+        x1 = direction === "right" ? src.x + src.width : src.x;
+        x2 = direction === "right" ? dst.x : dst.x + dst.width;
+        y1 = srcCy + portOffset;
+        y2 = dstCy + portOffset;
+      } else if (isBidirectional && Math.abs(dst.layer - src.layer) <= 1 && !isReverseReturnOnOppositeSide) {
+        // Adjacent reverse edge in a 2-way pair: direct return facing ports with lateral separation
+        x1 = forwardRight ? src.x + src.width : src.x;
+        x2 = forwardRight ? dst.x : dst.x + dst.width;
+        y1 = srcCy + portOffset;
+        y2 = dstCy + portOffset;
+      } else {
+        // Long back-edge: connect cleanly using side/top-bottom ports or primary outer U-loop
+        x1 = direction === "right" ? src.x + src.width * 0.5 : src.x + src.width * 0.5;
+        x2 = direction === "right" ? dst.x + dst.width * 0.5 : dst.x + dst.width * 0.5;
+        // Prefer routing along top or bottom edge ports cleanly
+        const spanMinX = Math.min(src.x, dst.x);
+        const spanMaxX = Math.max(src.x + src.width, dst.x + dst.width);
+        let spanTop = Math.min(src.y, dst.y);
+        let spanBottom = Math.max(src.y + src.height, dst.y + dst.height);
+        for (const obs of obstacles) {
+          if (obs.x + obs.width > spanMinX - 20 && obs.x < spanMaxX + 20) {
+            if (obs.y < spanTop) spanTop = obs.y;
+            if (obs.y + obs.height > spanBottom) spanBottom = obs.y + obs.height;
+          }
+        }
+        const corridorStep = (bypassCount++ % 5) * 20;
+        const avgY = (srcCy + dstCy) / 2;
+        const distToTop = Math.abs(avgY - spanTop);
+        const distToBottom = Math.abs(spanBottom - avgY);
+        const goTop = distToTop <= distToBottom;
+        const laneY = goTop ? spanTop - 32 - corridorStep : spanBottom + 32 + corridorStep;
+        y1 = goTop ? src.y : src.y + src.height;
+        y2 = goTop ? dst.y : dst.y + dst.height;
+
+        const pts: Point[] = [
+          { x: x1, y: y1 },
+          { x: x1, y: laneY },
+          { x: x2, y: laneY },
+          { x: x2, y: y2 },
+        ];
+        const label = pickLabelAnchor(pts, siblingRank - (siblings.length - 1) / 2);
+        return {
+          edge,
+          index: idx,
+          x1,
+          y1,
+          x2,
+          y2,
+          svgPath: polylineToSmoothStepPath(pts),
+          labelX: label.x,
+          labelY: label.y,
+          isBackEdge: true,
+          isBidirectional,
+        };
+      }
+
+      // Direct horizontal Z-bend
+      const midX = (x1 + x2) / 2 + (siblings.length > 1 ? portOffset * 0.35 : 0);
+      const directPts: Point[] =
+        Math.abs(y1 - y2) < 1
+          ? [
+              { x: x1, y: y1 },
+              { x: x2, y: y2 },
+            ]
+          : [
+              { x: x1, y: y1 },
+              { x: midX, y: y1 },
+              { x: midX, y: y2 },
+              { x: x2, y: y2 },
+            ];
+
+      const hitsNode =
+        (direction === "right" ? x2 < x1 + 12 : x2 > x1 - 12) ||
+        polylineIntersectsAny(directPts, obstacles, 10);
+
+      if (!hitsNode) {
+        const label = pickLabelAnchor(
+          directPts,
+          siblings.length > 1 ? (siblingRank - (siblings.length - 1) / 2) * 0.7 : 0,
+        );
+        return {
+          edge,
+          index: idx,
+          x1,
+          y1,
+          x2,
+          y2,
+          svgPath: polylineToSmoothStepPath(directPts),
+          labelX: label.x,
+          labelY: label.y,
+          isBackEdge,
+          isBidirectional,
+        };
+      }
+
+      // Route around obstacles along an outer horizontal corridor above or below interfering nodes
+      const exitSign = direction === "right" ? 1 : -1;
+      const stub = 24;
+      const spanMinX = Math.min(x1, x2) - stub;
+      const spanMaxX = Math.max(x1, x2) + stub;
+      let spanTop = Math.min(src.y, dst.y, globalMinY);
+      let spanBottom = Math.max(src.y + src.height, dst.y + dst.height, globalMaxY);
+      let localTop = Math.min(src.y, dst.y);
+      let localBottom = Math.max(src.y + src.height, dst.y + dst.height);
+      for (const obs of obstacles) {
+        if (obs.x + obs.width > spanMinX && obs.x < spanMaxX) {
+          if (obs.y < localTop) localTop = obs.y;
+          if (obs.y + obs.height > localBottom) localBottom = obs.y + obs.height;
+        }
+      }
+      spanTop = localTop;
+      spanBottom = localBottom;
+
+      const corridorStep = (bypassCount++ % 5) * 20;
+      const avgY = (y1 + y2) / 2;
+      const goTop = Math.abs(avgY - spanTop) <= Math.abs(spanBottom - avgY);
+      const laneY = goTop ? spanTop - 28 - corridorStep : spanBottom + 28 + corridorStep;
+
+      const bypassPts: Point[] = [
+        { x: x1, y: y1 },
+        { x: x1 + exitSign * stub, y: y1 },
+        { x: x1 + exitSign * stub, y: laneY },
+        { x: x2 - exitSign * stub, y: laneY },
+        { x: x2 - exitSign * stub, y: y2 },
+        { x: x2, y: y2 },
+      ];
+      const label = pickLabelAnchor(bypassPts, 0);
+      return {
+        edge,
+        index: idx,
+        x1,
+        y1,
+        x2,
+        y2,
+        svgPath: polylineToSmoothStepPath(bypassPts),
+        labelX: label.x,
+        labelY: label.y,
+        isBackEdge,
+        isBidirectional,
+      };
+    }
+
+    // Vertical flows ("down" | "up")
+    const forwardFlow = direction === "down" ? dstCy >= srcCy - 10 : dstCy <= srcCy + 10;
 
     let x1: number;
     let y1: number;
     let x2: number;
     let y2: number;
-    let cx1: number;
-    let cy1: number;
-    let cx2: number;
-    let cy2: number;
 
-    if (isHorizontal) {
-      const goRight = toBox.x >= fromBox.x;
-      x1 = goRight ? fromBox.x + fromBox.width : fromBox.x;
-      y1 = fromBox.y + fromBox.height / 2;
-      x2 = goRight ? toBox.x : toBox.x + toBox.width;
-      y2 = toBox.y + toBox.height / 2;
-
-      if (fromBox === toBox) {
-        x1 = fromBox.x + fromBox.width * 0.7;
-        y1 = fromBox.y;
-        x2 = fromBox.x + fromBox.width * 0.3;
-        y2 = fromBox.y;
-        cx1 = x1 + 24;
-        cy1 = y1 - 44;
-        cx2 = x2 - 24;
-        cy2 = y2 - 44;
-      } else if (isBack) {
-        const arcOffset = -Math.max(46, Math.abs(y1 - y2) * 0.3 + 42);
-        cx1 = x1 + (goRight ? 40 : -40);
-        cy1 = y1 + arcOffset;
-        cx2 = x2 + (goRight ? -40 : 40);
-        cy2 = y2 + arcOffset;
-      } else {
-        const dx = Math.max(36, Math.abs(x2 - x1) * 0.45);
-        cx1 = x1 + (goRight ? dx : -dx);
-        cy1 = y1;
-        cx2 = x2 - (goRight ? dx : -dx);
-        cy2 = y2;
-      }
+    if (forwardFlow) {
+      x1 = srcCx + portOffset;
+      x2 = dstCx + portOffset;
+      y1 = direction === "down" ? src.y + src.height : src.y;
+      y2 = direction === "down" ? dst.y : dst.y + dst.height;
+    } else if (isBidirectional && Math.abs(dst.layer - src.layer) <= 1) {
+      // Opposite return edge cleanly tracks beside forward edge (facing bottom<->top ports)
+      x1 = srcCx + portOffset;
+      x2 = dstCx + portOffset;
+      y1 = dstCy >= srcCy ? src.y + src.height : src.y;
+      y2 = dstCy >= srcCy ? dst.y : dst.y + dst.height;
     } else {
-      const goDown = toBox.y >= fromBox.y;
-      x1 = fromBox.x + fromBox.width / 2;
-      y1 = goDown ? fromBox.y + fromBox.height : fromBox.y;
-      x2 = toBox.x + toBox.width / 2;
-      y2 = goDown ? toBox.y : toBox.y + toBox.height;
-
-      if (fromBox === toBox) {
-        x1 = fromBox.x + fromBox.width;
-        y1 = fromBox.y + fromBox.height * 0.3;
-        x2 = fromBox.x + fromBox.width;
-        y2 = fromBox.y + fromBox.height * 0.7;
-        cx1 = x1 + 48;
-        cy1 = y1 - 12;
-        cx2 = x2 + 48;
-        cy2 = y2 + 12;
-      } else if (isBack) {
-        const arcOffset = Math.max(48, Math.abs(x1 - x2) * 0.3 + 42);
-        cx1 = x1 + arcOffset;
-        cy1 = y1 + (goDown ? 36 : -36);
-        cx2 = x2 + arcOffset;
-        cy2 = y2 + (goDown ? -36 : 36);
-      } else {
-        const dy = Math.max(32, Math.abs(y2 - y1) * 0.45);
-        cx1 = x1;
-        cy1 = y1 + (goDown ? dy : -dy);
-        cx2 = x2;
-        cy2 = y2 - (goDown ? dy : -dy);
+      // Long vertical back-edge: route along left or right side corridor outside intermediate nodes
+      const spanMinY = Math.min(src.y, dst.y);
+      const spanMaxY = Math.max(src.y + src.height, dst.y + dst.height);
+      let localLeft = Math.min(src.x, dst.x);
+      let localRight = Math.max(src.x + src.width, dst.x + dst.width);
+      for (const obs of obstacles) {
+        if (obs.y + obs.height > spanMinY - 20 && obs.y < spanMaxY + 20) {
+          if (obs.x < localLeft) localLeft = obs.x;
+          if (obs.x + obs.width > localRight) localRight = obs.x + obs.width;
+        }
       }
+      const corridorStep = (bypassCount++ % 5) * 22;
+      const avgX = (srcCx + dstCx) / 2;
+      const goLeft = Math.abs(avgX - localLeft) <= Math.abs(localRight - avgX);
+      const laneX = goLeft ? localLeft - 36 - corridorStep : localRight + 36 + corridorStep;
+      x1 = goLeft ? src.x : src.x + src.width;
+      x2 = goLeft ? dst.x : dst.x + dst.width;
+      y1 = srcCy;
+      y2 = dstCy;
+
+      const pts: Point[] = [
+        { x: x1, y: y1 },
+        { x: laneX, y: y1 },
+        { x: laneX, y: y2 },
+        { x: x2, y: y2 },
+      ];
+      const label = pickLabelAnchor(pts, siblingRank - (siblings.length - 1) / 2);
+      return {
+        edge,
+        index: idx,
+        x1,
+        y1,
+        x2,
+        y2,
+        svgPath: polylineToSmoothStepPath(pts),
+        labelX: label.x,
+        labelY: label.y,
+        isBackEdge: true,
+        isBidirectional,
+      };
     }
 
-    // Point on cubic Bezier at t = 0.5
-    const labelX = 0.125 * x1 + 0.375 * cx1 + 0.375 * cx2 + 0.125 * x2;
-    const labelY = 0.125 * y1 + 0.375 * cy1 + 0.375 * cy2 + 0.125 * y2;
+    const midY = (y1 + y2) / 2 + (siblings.length > 1 ? portOffset * 0.25 : 0);
+    const directPts: Point[] =
+      Math.abs(x1 - x2) < 1
+        ? [
+            { x: x1, y: y1 },
+            { x: x2, y: y2 },
+          ]
+        : [
+            { x: x1, y: y1 },
+            { x: x1, y: midY },
+            { x: x2, y: midY },
+            { x: x2, y: y2 },
+          ];
 
+    const hitsNode =
+      (direction === "down" ? y2 < y1 + 12 : y2 > y1 - 12) ||
+      polylineIntersectsAny(directPts, obstacles, 10);
+
+    if (!hitsNode) {
+      const label = pickLabelAnchor(
+        directPts,
+        siblings.length > 1 ? (siblingRank - (siblings.length - 1) / 2) * 0.55 : 0,
+      );
+      return {
+        edge,
+        index: idx,
+        x1,
+        y1,
+        x2,
+        y2,
+        svgPath: polylineToSmoothStepPath(directPts),
+        labelX: label.x,
+        labelY: label.y,
+        isBackEdge,
+        isBidirectional,
+      };
+    }
+
+    const exitSign = direction === "down" ? 1 : -1;
+    const stub = 22;
+    const spanMinY = Math.min(y1, y2) - stub;
+    const spanMaxY = Math.max(y1, y2) + stub;
+    let localLeft = Math.min(src.x, dst.x);
+    let localRight = Math.max(src.x + src.width, dst.x + dst.width);
+    for (const obs of obstacles) {
+      if (obs.y + obs.height > spanMinY && obs.y < spanMaxY) {
+        if (obs.x < localLeft) localLeft = obs.x;
+        if (obs.x + obs.width > localRight) localRight = obs.x + obs.width;
+      }
+    }
+    const corridorStep = (bypassCount++ % 5) * 22;
+    const avgX = (x1 + x2) / 2;
+    const goLeft = Math.abs(avgX - localLeft) <= Math.abs(localRight - avgX);
+    const laneX = goLeft ? localLeft - 32 - corridorStep : localRight + 32 + corridorStep;
+
+    const bypassPts: Point[] = [
+      { x: x1, y: y1 },
+      { x: x1, y: y1 + exitSign * stub },
+      { x: laneX, y: y1 + exitSign * stub },
+      { x: laneX, y: y2 - exitSign * stub },
+      { x: x2, y: y2 - exitSign * stub },
+      { x: x2, y: y2 },
+    ];
+    const label = pickLabelAnchor(bypassPts, 0);
     return {
       edge,
-      index,
+      index: idx,
       x1,
       y1,
       x2,
       y2,
-      cx1,
-      cy1,
-      cx2,
-      cy2,
-      labelX,
-      labelY,
-      isBackEdge: isBack,
+      svgPath: polylineToSmoothStepPath(bypassPts),
+      labelX: label.x,
+      labelY: label.y,
+      isBackEdge,
+      isBidirectional,
+    };
+  });
+}
+
+function computeCanvasSize(
+  nodes: PositionedNode[],
+  groups: PositionedGroup[],
+  edges: PositionedEdge[],
+): { width: number; height: number } {
+  let maxX = 480;
+  let maxY = 260;
+
+  for (const n of nodes) {
+    if (n.x + n.width + OUTER_PAD > maxX) maxX = n.x + n.width + OUTER_PAD;
+    if (n.y + n.height + OUTER_PAD > maxY) maxY = n.y + n.height + OUTER_PAD;
+  }
+  for (const g of groups) {
+    if (g.x + g.width + OUTER_PAD > maxX) maxX = g.x + g.width + OUTER_PAD;
+    if (g.y + g.height + OUTER_PAD > maxY) maxY = g.y + g.height + OUTER_PAD;
+  }
+  for (const e of edges) {
+    if (e.labelX + 90 > maxX) maxX = e.labelX + 90;
+    if (e.labelY + 40 > maxY) maxY = e.labelY + 40;
+  }
+
+  return { width: Math.ceil(maxX), height: Math.ceil(maxY) };
+}
+
+export function applyGraphOffsets(base: GraphLayoutResult, offsets: NodeOffsetMap): GraphLayoutResult {
+  const keys = Object.keys(offsets);
+  if (keys.length === 0) return base;
+
+  const shiftedNodes = base.nodes.map((pn) => {
+    const off = offsets[pn.node.id];
+    if (!off || (off.dx === 0 && off.dy === 0)) return pn;
+    return {
+      ...pn,
+      x: pn.x + off.dx,
+      y: pn.y + off.dy,
     };
   });
 
-  const maxRight = Math.max(
-    360,
-    ...positionedNodes.map((n) => n.x + n.width + 28),
-    ...positionedGroups.map((g) => g.x + g.width + 28),
-    ...positionedEdges.map((e) => Math.max(e.cx1, e.cx2, e.x1, e.x2) + 28),
-  );
-  const maxBottom = Math.max(
-    180,
-    ...positionedNodes.map((n) => n.y + n.height + 28),
-    ...positionedGroups.map((g) => g.y + g.height + 28),
-    ...positionedEdges.map((e) => Math.max(e.cy1, e.cy2, e.y1, e.y2) + 28),
-  );
+  const depthMap = new Map<string, number>();
+  const groupNodes: GraphNode[] = [];
+  for (const g of base.groups) {
+    groupNodes.push(g.node);
+    let depth = 0;
+    let cur = g.node.group;
+    const seen = new Set<string>([g.node.id]);
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      depth++;
+      cur = base.groups.find((cand) => cand.node.id === cur)?.node.group;
+    }
+    depthMap.set(g.node.id, depth);
+  }
+
+  const shiftedGroups = buildGroups(groupNodes, shiftedNodes, depthMap);
+  const rawEdges = base.edges.map((e) => e.edge);
+  const routedEdges = routeEdges(rawEdges, shiftedNodes, base.direction);
+  const size = computeCanvasSize(shiftedNodes, shiftedGroups, routedEdges);
 
   return {
-    width: Math.ceil(maxRight),
-    height: Math.ceil(maxBottom),
+    ...base,
+    width: size.width,
+    height: size.height,
+    nodes: shiftedNodes,
+    groups: shiftedGroups,
+    edges: routedEdges,
+  };
+}
+
+export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
+  const direction = spec.direction ?? "right";
+  const allNodes: GraphNode[] = (spec.nodes ?? []).map((n) => ({
+    ...n,
+    type: n.type ?? "service",
+  }));
+  const edges: GraphEdge[] = (spec.edges ?? []).map((e) => ({
+    ...e,
+    kind: e.kind ?? "flow",
+  }));
+
+  const groupNodes = allNodes.filter((n) => n.type === "group");
+  const contentNodes = allNodes.filter((n) => n.type !== "group");
+
+  if (contentNodes.length === 0 && groupNodes.length === 0) {
+    return { width: 420, height: 220, direction, nodes: [], groups: [], edges: [] };
+  }
+
+  const nodeById = new Map<string, GraphNode>();
+  for (const n of allNodes) nodeById.set(n.id, n);
+
+  const depthMap = new Map<string, number>();
+  for (const g of groupNodes) {
+    let depth = 0;
+    let cur = g.group;
+    const seen = new Set<string>([g.id]);
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      depth++;
+      cur = nodeById.get(cur)?.group;
+    }
+    depthMap.set(g.id, depth);
+  }
+
+  if (contentNodes.length === 0) {
+    const emptyGroups = buildGroups(groupNodes, [], depthMap);
+    const placedGroups = emptyGroups.map((g, i) => ({
+      ...g,
+      x: OUTER_PAD + i * (g.width + 24),
+      y: OUTER_PAD,
+    }));
+    const size = computeCanvasSize([], placedGroups, []);
+    return {
+      width: size.width,
+      height: size.height,
+      direction,
+      nodes: [],
+      groups: placedGroups,
+      edges: [],
+    };
+  }
+
+  const contentSet = new Set(contentNodes.map((n) => n.id));
+  const adj = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+
+  for (const n of contentNodes) {
+    adj.set(n.id, []);
+    inDegree.set(n.id, 0);
+  }
+
+  // Break cycles via DFS to produce a clean DAG for layering
+  const rawAdj = new Map<string, { to: string; idx: number }[]>();
+  for (const n of contentNodes) rawAdj.set(n.id, []);
+  edges.forEach((e, idx) => {
+    if (contentSet.has(e.from) && contentSet.has(e.to) && e.from !== e.to) {
+      rawAdj.get(e.from)!.push({ to: e.to, idx });
+    }
+  });
+
+  const visitState = new Map<string, number>(); // 0=unvisited, 1=visiting, 2=done
+  const backEdgeSet = new Set<number>();
+
+  const dfs = (id: string) => {
+    visitState.set(id, 1);
+    for (const edgeRef of rawAdj.get(id) ?? []) {
+      const state = visitState.get(edgeRef.to) ?? 0;
+      if (state === 1) {
+        backEdgeSet.add(edgeRef.idx);
+      } else if (state === 0) {
+        dfs(edgeRef.to);
+      }
+    }
+    visitState.set(id, 2);
+  };
+
+  for (const n of contentNodes) {
+    if ((visitState.get(n.id) ?? 0) === 0) dfs(n.id);
+  }
+
+  const dagInEdges = new Map<string, string[]>();
+  for (const n of contentNodes) dagInEdges.set(n.id, []);
+
+  edges.forEach((e, idx) => {
+    if (!contentSet.has(e.from) || !contentSet.has(e.to) || e.from === e.to) return;
+    if (backEdgeSet.has(idx)) return;
+    adj.get(e.from)!.push(e.to);
+    inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1);
+    dagInEdges.get(e.to)!.push(e.from);
+  });
+
+  // Topological longest-path layer assignment
+  const layerMap = new Map<string, number>();
+  const queue: string[] = [];
+  const tempIn = new Map(inDegree);
+
+  for (const n of contentNodes) {
+    if ((tempIn.get(n.id) ?? 0) === 0) {
+      queue.push(n.id);
+      layerMap.set(n.id, 0);
+    }
+  }
+
+  while (queue.length > 0) {
+    const curr = queue.shift()!;
+    const currLayer = layerMap.get(curr) ?? 0;
+    for (const next of adj.get(curr) ?? []) {
+      const candidate = currLayer + 1;
+      if ((layerMap.get(next) ?? 0) < candidate) {
+        layerMap.set(next, candidate);
+      }
+      const nextIn = (tempIn.get(next) ?? 1) - 1;
+      tempIn.set(next, nextIn);
+      if (nextIn === 0) queue.push(next);
+    }
+  }
+
+  for (const n of contentNodes) {
+    if (!layerMap.has(n.id)) layerMap.set(n.id, 0);
+  }
+
+  // Group content nodes by layer
+  let maxLayer = 0;
+  for (const l of layerMap.values()) {
+    if (l > maxLayer) maxLayer = l;
+  }
+
+  const layers: GraphNode[][] = Array.from({ length: maxLayer + 1 }, () => []);
+  for (const n of contentNodes) {
+    layers[layerMap.get(n.id) ?? 0]!.push(n);
+  }
+
+  // Track group order key so grouped nodes stay clustered cleanly together
+  const groupOrderKey = new Map<string, number>();
+  groupNodes.forEach((g, idx) => groupOrderKey.set(g.id, idx + 1));
+
+  // Barycenter + group-clustered sibling ordering within each layer
+  const orderIndex = new Map<string, number>();
+  for (let l = 0; l < layers.length; l++) {
+    const layer = layers[l]!;
+    if (l > 0) {
+      layer.sort((a, b) => {
+        const score = (node: GraphNode) => {
+          const parents = dagInEdges.get(node.id) ?? [];
+          let bary = 0;
+          if (parents.length > 0) {
+            let sum = 0;
+            for (const p of parents) sum += orderIndex.get(p) ?? 0;
+            bary = sum / parents.length;
+          }
+          const grpKey = node.group ? (groupOrderKey.get(node.group) ?? 0) : 0;
+          return { bary, grpKey };
+        };
+        const sa = score(a);
+        const sb = score(b);
+        if (Math.abs(sa.bary - sb.bary) > 0.15) return sa.bary - sb.bary;
+        if (sa.grpKey !== sb.grpKey) return sa.grpKey - sb.grpKey;
+        return 0;
+      });
+    } else {
+      layer.sort((a, b) => {
+        const ga = a.group ? (groupOrderKey.get(a.group) ?? 0) : 0;
+        const gb = b.group ? (groupOrderKey.get(b.group) ?? 0) : 0;
+        return ga - gb;
+      });
+    }
+    layer.forEach((n, idx) => orderIndex.set(n.id, idx));
+  }
+
+  const sizeMap = new Map<string, { width: number; height: number }>();
+  for (const n of contentNodes) sizeMap.set(n.id, estimateNodeSize(n));
+
+  // Check if crossing between distinct groups along same layer needs extra breathing room
+  const isHorizontal = direction === "right" || direction === "left";
+  const layerGap = isHorizontal ? LAYER_GAP_H : LAYER_GAP_V;
+  const siblingGap = isHorizontal ? SIBLING_GAP_H : SIBLING_GAP_V;
+
+  // Measure thickness of each layer along the flow axis
+  const layerThickness = layers.map((layer) => {
+    let maxDim = 0;
+    for (const n of layer) {
+      const sz = sizeMap.get(n.id)!;
+      const d = isHorizontal ? sz.width : sz.height;
+      if (d > maxDim) maxDim = d;
+    }
+    return maxDim;
+  });
+
+  // Also add extra layer gap when consecutive layers cross a group boundary
+  const layerExtraGap = layers.map((layer, l) => {
+    if (l >= layers.length - 1) return 0;
+    const nextLayer = layers[l + 1]!;
+    const gCurr = new Set(layer.map((n) => n.group).filter(Boolean));
+    const gNext = new Set(nextLayer.map((n) => n.group).filter(Boolean));
+    let crossesBoundary = false;
+    for (const n of layer) {
+      if (n.group && !gNext.has(n.group)) crossesBoundary = true;
+    }
+    for (const n of nextLayer) {
+      if (n.group && !gCurr.has(n.group)) crossesBoundary = true;
+    }
+    return crossesBoundary ? 34 : 0;
+  });
+
+  // Measure cross-axis spans per layer to center layers symmetrically
+  const layerCrossSpans = layers.map((layer) => {
+    let span = 0;
+    for (let i = 0; i < layer.length; i++) {
+      const n = layer[i]!;
+      const sz = sizeMap.get(n.id)!;
+      const crossDim = isHorizontal ? sz.height : sz.width;
+      span += crossDim;
+      if (i < layer.length - 1) {
+        const next = layer[i + 1]!;
+        const groupBoundary = n.group !== next.group && (Boolean(n.group) || Boolean(next.group));
+        span += siblingGap + (groupBoundary ? 42 : 0);
+      }
+    }
+    return span;
+  });
+  const maxCrossSpan = Math.max(120, ...layerCrossSpans);
+
+  const positionedNodes: PositionedNode[] = [];
+  let flowCursor = OUTER_PAD;
+
+  // For reverse directions ("left" or "up"), lay out from highest layer backward or flip afterwards
+  for (let l = 0; l < layers.length; l++) {
+    const layer = layers[l]!;
+    const thickness = layerThickness[l] ?? 0;
+    const crossSpan = layerCrossSpans[l] ?? 0;
+    let crossCursor = OUTER_PAD + Math.max(0, (maxCrossSpan - crossSpan) / 2);
+
+    for (let i = 0; i < layer.length; i++) {
+      const n = layer[i]!;
+      const sz = sizeMap.get(n.id)!;
+      const x = isHorizontal
+        ? flowCursor + (thickness - sz.width) / 2
+        : crossCursor;
+      const y = isHorizontal
+        ? crossCursor
+        : flowCursor + (thickness - sz.height) / 2;
+
+      positionedNodes.push({
+        node: n,
+        x,
+        y,
+        width: sz.width,
+        height: sz.height,
+        layer: l,
+      });
+
+      const crossDim = isHorizontal ? sz.height : sz.width;
+      crossCursor += crossDim;
+      if (i < layer.length - 1) {
+        const next = layer[i + 1]!;
+        const groupBoundary = n.group !== next.group && (Boolean(n.group) || Boolean(next.group));
+        crossCursor += siblingGap + (groupBoundary ? 42 : 0);
+      }
+    }
+
+    flowCursor += thickness + layerGap + (layerExtraGap[l] ?? 0);
+  }
+
+  // Flip coordinates cleanly for "left" or "up" directions before building group boxes and routing edges
+  if (direction === "left" || direction === "up") {
+    let maxRight = 0;
+    let maxBottom = 0;
+    for (const pn of positionedNodes) {
+      if (pn.x + pn.width > maxRight) maxRight = pn.x + pn.width;
+      if (pn.y + pn.height > maxBottom) maxBottom = pn.y + pn.height;
+    }
+    for (const pn of positionedNodes) {
+      if (direction === "left") {
+        pn.x = maxRight - (pn.x + pn.width) + OUTER_PAD;
+      } else {
+        pn.y = maxBottom - (pn.y + pn.height) + OUTER_PAD;
+      }
+    }
+  }
+
+  // Iterative separation pass: ensure groups don't overlap each other or trap non-member nodes
+  let groups = buildGroups(groupNodes, positionedNodes, depthMap);
+  if (groups.length > 0) {
+    const memberSets = new Map<string, Set<string>>();
+    for (const g of groups) memberSets.set(g.node.id, new Set(g.memberIds));
+
+    for (let iter = 0; iter < 4; iter++) {
+      let moved = false;
+
+      // Push non-member nodes out of any group container they collide with
+      for (const g of groups) {
+        const members = memberSets.get(g.node.id)!;
+        for (const pn of positionedNodes) {
+          if (members.has(pn.node.id)) continue;
+          if (!rectsOverlap(pn, g, 12)) continue;
+
+          const pnCross = isHorizontal ? pn.y + pn.height / 2 : pn.x + pn.width / 2;
+          const gCross = isHorizontal ? g.y + g.height / 2 : g.x + g.width / 2;
+          if (isHorizontal) {
+            const delta =
+              pnCross >= gCross
+                ? g.y + g.height + 28 - pn.y
+                : g.y - 28 - (pn.y + pn.height);
+            pn.y += delta;
+          } else {
+            const delta =
+              pnCross >= gCross
+                ? g.x + g.width + 28 - pn.x
+                : g.x - 28 - (pn.x + pn.width);
+            pn.x += delta;
+          }
+          moved = true;
+        }
+      }
+
+      // Push overlapping sibling groups apart along cross axis
+      for (let i = 0; i < groups.length; i++) {
+        for (let j = i + 1; j < groups.length; j++) {
+          const a = groups[i]!;
+          const b = groups[j]!;
+          // Skip parent/child nested groups
+          if (memberSets.get(a.node.id)?.has(b.memberIds[0] ?? "") || memberSets.get(b.node.id)?.has(a.memberIds[0] ?? "")) {
+            continue;
+          }
+          if (!rectsOverlap(a, b, 14)) continue;
+
+          if (isHorizontal) {
+            const aMid = a.y + a.height / 2;
+            const bMid = b.y + b.height / 2;
+            const shift =
+              bMid >= aMid
+                ? a.y + a.height + 28 - b.y
+                : -(b.y + b.height + 28 - a.y);
+            const setB = memberSets.get(b.node.id)!;
+            for (const pn of positionedNodes) {
+              if (setB.has(pn.node.id)) pn.y += shift;
+            }
+          } else {
+            const aMid = a.x + a.width / 2;
+            const bMid = b.x + b.width / 2;
+            const shift =
+              bMid >= aMid
+                ? a.x + a.width + 28 - b.x
+                : -(b.x + b.width + 28 - a.x);
+            const setB = memberSets.get(b.node.id)!;
+            for (const pn of positionedNodes) {
+              if (setB.has(pn.node.id)) pn.x += shift;
+            }
+          }
+          moved = true;
+        }
+      }
+
+      if (!moved) break;
+      groups = buildGroups(groupNodes, positionedNodes, depthMap);
+    }
+  }
+
+  // Normalize all positions so top-left content starts inside OUTER_PAD without negative coords
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  for (const pn of positionedNodes) {
+    if (pn.x < minX) minX = pn.x;
+    if (pn.y < minY) minY = pn.y;
+  }
+  for (const pg of groups) {
+    if (pg.x < minX) minX = pg.x;
+    if (pg.y < minY) minY = pg.y;
+  }
+  const shiftX = Number.isFinite(minX) ? OUTER_PAD - minX : 0;
+  const shiftY = Number.isFinite(minY) ? OUTER_PAD - minY : 0;
+  if (Math.abs(shiftX) > 0.5 || Math.abs(shiftY) > 0.5) {
+    for (const pn of positionedNodes) {
+      pn.x += shiftX;
+      pn.y += shiftY;
+    }
+    for (const pg of groups) {
+      pg.x += shiftX;
+      pg.y += shiftY;
+    }
+  }
+
+  const routedEdges = routeEdges(edges, positionedNodes, direction);
+
+  // Shift right/down if any outer bypass corridor pushed left/top below OUTER_PAD
+  let extraLeft = Number.POSITIVE_INFINITY;
+  let extraTop = Number.POSITIVE_INFINITY;
+  for (const pn of positionedNodes) {
+    if (pn.x < extraLeft) extraLeft = pn.x;
+    if (pn.y < extraTop) extraTop = pn.y;
+  }
+  for (const pg of groups) {
+    if (pg.x < extraLeft) extraLeft = pg.x;
+    if (pg.y < extraTop) extraTop = pg.y;
+  }
+  for (const e of routedEdges) {
+    if (e.labelX - 70 < extraLeft) extraLeft = e.labelX - 70;
+    if (e.labelY - 24 < extraTop) extraTop = e.labelY - 24;
+  }
+  const corrX = extraLeft < 24 ? 24 - extraLeft : 0;
+  const corrY = extraTop < 24 ? 24 - extraTop : 0;
+  const finalEdges =
+    corrX > 0 || corrY > 0
+      ? (() => {
+          for (const pn of positionedNodes) {
+            pn.x += corrX;
+            pn.y += corrY;
+          }
+          for (const pg of groups) {
+            pg.x += corrX;
+            pg.y += corrY;
+          }
+          return routeEdges(edges, positionedNodes, direction);
+        })()
+      : routedEdges;
+
+  const size = computeCanvasSize(positionedNodes, groups, finalEdges);
+
+  return {
+    width: size.width,
+    height: size.height,
     direction,
     nodes: positionedNodes,
-    groups: positionedGroups,
-    edges: positionedEdges,
+    groups,
+    edges: finalEdges,
   };
 }

@@ -77,14 +77,14 @@ Supported `chart` types: `line`, `area`, `bar`, `pie`, `donut`, `scatter`. Use o
 - `calendar`: `{"type": "calendar", "data": [{"date": "2026-11-01", "value": 3}]}`
 
 ### Interactive Graph (`paseo-graph` / `beluga-graph`)
-Strict JSON (no comments, no trailing commas, no manual coordinates). Use 4 to 25 nodes, concise 2-4 word labels, groups for boundaries, and `steps` when walking through a story:
+Strict JSON (no comments, no trailing commas, no manual coordinates). Use 4 to 25 nodes, concise 2-4 word labels, `"type": "group"` container boxes (`"group": "<id>"` on child nodes) whenever components belong to distinct layers, processes, or hosts, and `steps` when walking through a flow:
 
 ````markdown
 ```paseo-graph
 {
   "title": "How login works",
   "summary": "Session flow across web, API, and Postgres",
-  "direction": "right",
+  "direction": "down",
   "nodes": [
     { "id": "web", "type": "client", "label": "Web app", "sublabel": "React" },
     { "id": "backend", "type": "group", "label": "Backend" },
@@ -92,6 +92,7 @@ Strict JSON (no comments, no trailing commas, no manual coordinates). Use 4 to 2
       "id": "api",
       "type": "service",
       "label": "Auth API",
+      "sublabel": "Express",
       "group": "backend",
       "status": "done",
       "emphasis": true,
@@ -107,10 +108,12 @@ Strict JSON (no comments, no trailing commas, no manual coordinates). Use 4 to 2
   ],
   "edges": [
     { "from": "web", "to": "api", "label": "POST /login", "kind": "call" },
-    { "from": "api", "to": "db", "kind": "data" }
+    { "from": "api", "to": "web", "label": "Set-Cookie", "kind": "data" },
+    { "from": "api", "to": "db", "label": "SELECT user", "kind": "data" }
   ],
   "steps": [
-    { "title": "1. Sign in", "text": "Web posts credentials to Auth API.", "focus": ["web", "api"] }
+    { "title": "1. Sign in", "text": "Web posts credentials to Auth API.", "focus": ["web", "api"] },
+    { "title": "2. Verify", "text": "Auth API looks up user and issues cookie.", "focus": ["api", "db"] }
   ]
 }
 ```

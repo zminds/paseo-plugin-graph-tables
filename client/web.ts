@@ -1,7 +1,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { createElement, type ReactElement, type ReactNode } from "react";
+import { createElement, type ReactElement, type ReactNode, useId, useRef, useState } from "react";
 import { Platform } from "react-native";
-import type { GraphLayoutResult } from "../shared/graph-layout";
+import type { GraphLayoutResult, PositionedNode } from "../shared/graph-layout";
 import { truncateVisualText, visualTextUnits } from "../shared/query-engine";
 import type { ChartKind } from "../shared/view-schema";
 import { computeNiceScale, formatCompactNumber, type ParsedChartData } from "./format";
@@ -514,14 +514,66 @@ export function WebSvgChart({
   );
 }
 
+export interface GraphViewTransform {
+  x: number;
+  y: number;
+  scale: number;
+}
+
 export interface WebSvgGraphProps {
   layout: GraphLayoutResult;
   theme: PluginTheme;
+  viewportWidth: number;
+  viewportHeight: number;
+  transform: GraphViewTransform;
   selectedNodeId: string | null;
+  hoveredNodeId: string | null;
   focusedIds: ReadonlySet<string> | null;
   activeStepNumber?: number | null;
-  scale?: number;
+  animateFlow?: boolean;
+  enableWheelZoom?: boolean;
+  onTransformChange(next: GraphViewTransform): void;
+  onShiftNodes(nodeIds: readonly string[], dx: number, dy: number): void;
+  onHoverNode(id: string | null): void;
   onSelectNode(id: string | null): void;
+}
+
+interface SvgPointerEventLike {
+  button?: number;
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+  stopPropagation(): void;
+  preventDefault(): void;
+  currentTarget: {
+    setPointerCapture?(id: number): void;
+    releasePointerCapture?(id: number): void;
+    getBoundingClientRect?(): { left: number; top: number; width: number; height: number };
+  };
+}
+
+interface SvgWheelEventLike {
+  deltaY: number;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  clientX: number;
+  clientY: number;
+  preventDefault(): void;
+  stopPropagation(): void;
+  currentTarget: {
+    getBoundingClientRect?(): { left: number; top: number; width: number; height: number };
+  };
+}
+
+interface ActiveDragState {
+  mode: "pan" | "node" | "group";
+  nodeIds: readonly string[];
+  clickedNodeId: string | null;
+  lastClientX: number;
+  lastClientY: number;
+  movedDist: number;
+  capturedTarget: SvgPointerEventLike["currentTarget"] | null;
+  pointerId: number;
 }
 
 function statusHex(status: string | undefined, theme: PluginTheme): string | null {
@@ -540,100 +592,415 @@ function statusHex(status: string | undefined, theme: PluginTheme): string | nul
   }
 }
 
+function typeAccentColor(type: PositionedNode["node"]["type"], theme: PluginTheme): string {
+  switch (type) {
+    case "database":
+    case "storage":
+      return theme.colors.statusSuccess;
+    case "queue":
+    case "decision":
+      return theme.colors.statusWarning;
+    case "external":
+      return theme.colors.statusDanger;
+    case "client":
+    case "actor":
+    case "person":
+    case "service":
+    case "function":
+    case "metric":
+      return theme.colors.accent;
+    default:
+      return theme.colors.foregroundMuted;
+  }
+}
+
+function renderNodeBadgeGlyph(
+  type: PositionedNode["node"]["type"],
+  cx: number,
+  cy: number,
+  color: string,
+  label: string,
+): ReactElement {
+  const strokeProps = {
+    fill: "none",
+    stroke: color,
+    strokeWidth: 1.5,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+  };
+
+  switch (type) {
+    case "database":
+    case "storage":
+      return svgEl(
+        "g",
+        { key: "glyph" },
+        svgEl("ellipse", { cx, cy: cy - 3.5, rx: 5, ry: 2.2, ...strokeProps }),
+        svgEl("path", { d: `M ${cx - 5} ${cy - 3.5} v 7 c 0 1.2 2.2 2.2 5 2.2 s 5 -1 5 -2.2 v -7`, ...strokeProps }),
+        svgEl("path", { d: `M ${cx - 5} ${cy} c 0 1.2 2.2 2.2 5 2.2 s 5 -1 5 -2.2`, ...strokeProps }),
+      );
+    case "queue":
+      return svgEl(
+        "g",
+        { key: "glyph" },
+        svgEl("rect", { x: cx - 5, y: cy - 4.5, width: 10, height: 2.5, rx: 1, ...strokeProps }),
+        svgEl("rect", { x: cx - 5, y: cy - 0.5, width: 10, height: 2.5, rx: 1, ...strokeProps }),
+        svgEl("rect", { x: cx - 5, y: cy + 3.5, width: 10, height: 2.5, rx: 1, ...strokeProps }),
+      );
+    case "file":
+    case "note":
+      return svgEl(
+        "g",
+        { key: "glyph" },
+        svgEl("path", {
+          d: `M ${cx - 4} ${cy - 5.5} h 5.5 l 2.5 2.5 v 8.5 h -8 z`,
+          ...strokeProps,
+        }),
+        svgEl("path", { d: `M ${cx - 2} ${cy} h 4 M ${cx - 2} ${cy + 2.8} h 3`, ...strokeProps }),
+      );
+    case "function":
+      return svgEl(
+        "text",
+        {
+          key: "glyph",
+          x: cx,
+          y: cy + 4,
+          textAnchor: "middle",
+          fill: color,
+          fontSize: 13,
+          fontStyle: "italic",
+          fontWeight: "700",
+        },
+        "f",
+      );
+    case "decision":
+      return svgEl("polygon", {
+        key: "glyph",
+        points: `${cx},${cy - 5.5} ${cx + 5.5},${cy} ${cx},${cy + 5.5} ${cx - 5.5},${cy}`,
+        ...strokeProps,
+      });
+    case "metric":
+      return svgEl("path", {
+        key: "glyph",
+        d: `M ${cx - 5.5} ${cy + 2} l 3 -3.5 l 2.5 2 l 4.5 -5`,
+        ...strokeProps,
+      });
+    case "client":
+    case "actor":
+    case "person":
+      return svgEl(
+        "text",
+        {
+          key: "glyph",
+          x: cx,
+          y: cy + 4,
+          textAnchor: "middle",
+          fill: color,
+          fontSize: 11.5,
+          fontWeight: "700",
+        },
+        (label.trim().charAt(0) || "A").toUpperCase(),
+      );
+    case "external":
+      return svgEl(
+        "g",
+        { key: "glyph" },
+        svgEl("circle", { cx, cy, r: 5, ...strokeProps }),
+        svgEl("path", { d: `M ${cx - 5} ${cy} h 10 M ${cx} ${cy - 5} c 2 2 2 8 0 10`, ...strokeProps }),
+      );
+    default:
+      return svgEl(
+        "g",
+        { key: "glyph" },
+        svgEl("rect", { x: cx - 5, y: cy - 5, width: 10, height: 10, rx: 2, ...strokeProps }),
+        svgEl("rect", { x: cx - 2, y: cy - 2, width: 4, height: 4, rx: 0.8, fill: color }),
+      );
+  }
+}
+
 export function WebSvgGraph({
   layout,
   theme,
+  viewportWidth,
+  viewportHeight,
+  transform,
   selectedNodeId,
+  hoveredNodeId,
   focusedIds,
   activeStepNumber = null,
-  scale = 1,
+  animateFlow = true,
+  enableWheelZoom = false,
+  onTransformChange,
+  onShiftNodes,
+  onHoverNode,
   onSelectNode,
 }: WebSvgGraphProps): ReactElement | null {
+  const rawUid = useId();
+  const uid = rawUid.replace(/[^a-zA-Z0-9_-]/g, "");
+  const [draggingMode, setDraggingMode] = useState<"idle" | "pan" | "node" | "group">("idle");
+  const dragRef = useRef<ActiveDragState | null>(null);
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
+
   if (!isWebPlatform) return null;
 
+  const idPrefix = `gt-${uid}`;
+  const arrowId = `${idPrefix}-arrow`;
+  const arrowAccentId = `${idPrefix}-arrow-accent`;
+  const arrowDangerId = `${idPrefix}-arrow-danger`;
+  const gridPatternId = `${idPrefix}-dots`;
+  const shadowFilterId = `${idPrefix}-shadow`;
+  const glowFilterId = `${idPrefix}-glow`;
+
+  const highlightNodeId = hoveredNodeId ?? selectedNodeId;
   const connectedNodes = new Set<string>();
-  if (selectedNodeId) {
-    connectedNodes.add(selectedNodeId);
+  if (highlightNodeId) {
+    connectedNodes.add(highlightNodeId);
     for (const e of layout.edges) {
-      if (e.edge.from === selectedNodeId) connectedNodes.add(e.edge.to);
-      if (e.edge.to === selectedNodeId) connectedNodes.add(e.edge.from);
+      if (e.edge.from === highlightNodeId) connectedNodes.add(e.edge.to);
+      if (e.edge.to === highlightNodeId) connectedNodes.add(e.edge.from);
     }
   }
 
-  const children: ReactNode[] = [
-    svgEl(
-      "defs",
-      { key: "defs" },
-      svgEl(
-        "marker",
-        {
-          id: "gt-arrow",
-          viewBox: "0 0 10 10",
-          refX: 8.5,
-          refY: 5,
-          markerWidth: 6.5,
-          markerHeight: 6.5,
-          orient: "auto-start-reverse",
-        },
-        svgEl("path", { d: "M 0 1 L 9 5 L 0 9 z", fill: theme.colors.foregroundMuted }),
-      ),
-      svgEl(
-        "marker",
-        {
-          id: "gt-arrow-accent",
-          viewBox: "0 0 10 10",
-          refX: 8.5,
-          refY: 5,
-          markerWidth: 7.5,
-          markerHeight: 7.5,
-          orient: "auto-start-reverse",
-        },
-        svgEl("path", { d: "M 0 1 L 9 5 L 0 9 z", fill: theme.colors.accent }),
-      ),
-    ),
-  ];
+  const startDrag = (
+    e: SvgPointerEventLike,
+    mode: ActiveDragState["mode"],
+    nodeIds: readonly string[],
+    clickedNodeId: string | null,
+  ) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      // Ignore environments without synthetic pointer capture
+    }
+    dragRef.current = {
+      mode,
+      nodeIds,
+      clickedNodeId,
+      lastClientX: e.clientX,
+      lastClientY: e.clientY,
+      movedDist: 0,
+      capturedTarget: e.currentTarget,
+      pointerId: e.pointerId,
+    };
+    setDraggingMode(mode);
+  };
 
-  // Groups
+  const handlePointerMove = (e: SvgPointerEventLike) => {
+    const active = dragRef.current;
+    if (!active) return;
+    const dxScreen = e.clientX - active.lastClientX;
+    const dyScreen = e.clientY - active.lastClientY;
+    if (dxScreen === 0 && dyScreen === 0) return;
+
+    active.lastClientX = e.clientX;
+    active.lastClientY = e.clientY;
+    active.movedDist += Math.hypot(dxScreen, dyScreen);
+
+    const cur = transformRef.current;
+    if (active.mode === "pan") {
+      onTransformChange({
+        ...cur,
+        x: cur.x + dxScreen,
+        y: cur.y + dyScreen,
+      });
+    } else if (active.nodeIds.length > 0) {
+      const safeScale = Math.max(0.25, cur.scale);
+      onShiftNodes(active.nodeIds, dxScreen / safeScale, dyScreen / safeScale);
+    }
+  };
+
+  const finishDrag = (e: SvgPointerEventLike) => {
+    const active = dragRef.current;
+    if (!active) return;
+    dragRef.current = null;
+    setDraggingMode("idle");
+    try {
+      active.capturedTarget?.releasePointerCapture?.(active.pointerId);
+    } catch {
+      // Ignore
+    }
+
+    if (active.movedDist < 5) {
+      if (active.mode === "node" && active.clickedNodeId) {
+        onSelectNode(selectedNodeId === active.clickedNodeId ? null : active.clickedNodeId);
+      } else if (active.mode === "pan" && selectedNodeId !== null) {
+        onSelectNode(null);
+      }
+    }
+    e.stopPropagation();
+  };
+
+  const handleWheel = (e: SvgWheelEventLike) => {
+    if (!enableWheelZoom && !e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const cur = transformRef.current;
+    const factor = e.deltaY < 0 ? 1.09 : 0.915;
+    const nextScale = Math.max(0.35, Math.min(2.4, Math.round(cur.scale * factor * 100) / 100));
+    if (nextScale === cur.scale) return;
+
+    const rect = e.currentTarget.getBoundingClientRect?.();
+    const anchorX = rect ? e.clientX - rect.left : viewportWidth / 2;
+    const anchorY = rect ? e.clientY - rect.top : viewportHeight / 2;
+
+    const graphX = (anchorX - cur.x) / cur.scale;
+    const graphY = (anchorY - cur.y) / cur.scale;
+
+    onTransformChange({
+      scale: nextScale,
+      x: anchorX - graphX * nextScale,
+      y: anchorY - graphY * nextScale,
+    });
+  };
+
+  const defs = svgEl(
+    "defs",
+    { key: "defs" },
+    svgEl(
+      "pattern",
+      {
+        id: gridPatternId,
+        width: 22,
+        height: 22,
+        patternUnits: "userSpaceOnUse",
+        patternTransform: `translate(${transform.x} ${transform.y}) scale(${transform.scale})`,
+      },
+      svgEl("circle", {
+        cx: 11,
+        cy: 11,
+        r: 1.05,
+        fill: theme.colors.border,
+        fillOpacity: 0.7,
+      }),
+    ),
+    svgEl(
+      "filter",
+      { id: shadowFilterId, x: "-12%", y: "-12%", width: "124%", height: "130%" },
+      svgEl("feDropShadow", {
+        dx: 0,
+        dy: 2,
+        stdDeviation: 3,
+        floodColor: "#000000",
+        floodOpacity: 0.14,
+      }),
+    ),
+    svgEl(
+      "filter",
+      { id: glowFilterId, x: "-22%", y: "-22%", width: "144%", height: "144%" },
+      svgEl("feDropShadow", {
+        dx: 0,
+        dy: 0,
+        stdDeviation: 5.5,
+        floodColor: theme.colors.accent,
+        floodOpacity: 0.45,
+      }),
+    ),
+    svgEl(
+      "marker",
+      {
+        id: arrowId,
+        viewBox: "0 0 10 10",
+        refX: 8.5,
+        refY: 5,
+        markerWidth: 6,
+        markerHeight: 6,
+        orient: "auto-start-reverse",
+      },
+      svgEl("path", { d: "M 0 1.2 L 9 5 L 0 8.8 z", fill: theme.colors.foregroundMuted }),
+    ),
+    svgEl(
+      "marker",
+      {
+        id: arrowAccentId,
+        viewBox: "0 0 10 10",
+        refX: 8.5,
+        refY: 5,
+        markerWidth: 7,
+        markerHeight: 7,
+        orient: "auto-start-reverse",
+      },
+      svgEl("path", { d: "M 0 1.2 L 9 5 L 0 8.8 z", fill: theme.colors.accent }),
+    ),
+    svgEl(
+      "marker",
+      {
+        id: arrowDangerId,
+        viewBox: "0 0 10 10",
+        refX: 8.5,
+        refY: 5,
+        markerWidth: 7,
+        markerHeight: 7,
+        orient: "auto-start-reverse",
+      },
+      svgEl("path", { d: "M 0 1.2 L 9 5 L 0 8.8 z", fill: theme.colors.statusDanger }),
+    ),
+  );
+
+  const stageChildren: ReactNode[] = [];
+
+  // 1. Groups (draggable container frames)
   for (const grp of layout.groups) {
-    const groupDimmed =
-      focusedIds !== null &&
-      !layout.nodes.some((n) => n.node.group === grp.node.id && focusedIds.has(n.node.id));
-    children.push(
+    const hasFocusedChild =
+      focusedIds !== null && grp.memberIds.some((id) => focusedIds.has(id));
+    const hasHighlightChild =
+      highlightNodeId !== null && grp.memberIds.includes(highlightNodeId);
+    const groupDimmed = focusedIds !== null && !hasFocusedChild;
+
+    stageChildren.push(
       svgEl(
         "g",
-        { key: `grp-${grp.node.id}`, opacity: groupDimmed ? 0.25 : 1 },
+        {
+          key: `grp-${grp.node.id}`,
+          opacity: groupDimmed ? 0.28 : 1,
+          style: { cursor: draggingMode === "group" ? "grabbing" : "grab" },
+          onPointerDown: (e: SvgPointerEventLike) =>
+            startDrag(e, "group", grp.memberIds, null),
+        },
         svgEl("rect", {
           x: grp.x,
           y: grp.y,
           width: grp.width,
           height: grp.height,
-          rx: 10,
+          rx: 14,
           fill: theme.colors.surface2,
-          fillOpacity: 0.35,
-          stroke: theme.colors.border,
-          strokeDasharray: "5 4",
-          strokeWidth: 1.2,
+          fillOpacity: hasFocusedChild || hasHighlightChild ? 0.56 : 0.42,
+          stroke:
+            hasFocusedChild || hasHighlightChild ? theme.colors.accent : theme.colors.border,
+          strokeOpacity: hasFocusedChild || hasHighlightChild ? 0.5 : 0.9,
+          strokeWidth: hasFocusedChild || hasHighlightChild ? 1.5 : 1.1,
+        }),
+        svgEl("circle", {
+          cx: grp.x + 16,
+          cy: grp.y + 20,
+          r: 3,
+          fill: hasFocusedChild ? theme.colors.accent : theme.colors.foregroundMuted,
         }),
         svgEl(
           "text",
           {
-            x: grp.x + 12,
-            y: grp.y + 18,
-            fill: theme.colors.foregroundMuted,
-            fontSize: 11,
-            fontWeight: "600",
+            x: grp.x + 25,
+            y: grp.y + 23.5,
+            fill: hasFocusedChild ? theme.colors.foreground : theme.colors.foregroundMuted,
+            fontSize: 10.5,
+            fontWeight: "700",
+            letterSpacing: "0.05em",
           },
-          grp.node.label,
+          (grp.node.label || grp.node.id).toUpperCase(),
         ),
       ),
     );
   }
 
-  // Edges
+  // 2. Edges (SmoothStep orthogonal paths + animated data-flow effects)
   for (const edgeBox of layout.edges) {
-    const isSelectedEdge =
-      selectedNodeId !== null &&
-      (edgeBox.edge.from === selectedNodeId || edgeBox.edge.to === selectedNodeId);
+    const isConnectedToHighlight =
+      highlightNodeId !== null &&
+      (edgeBox.edge.from === highlightNodeId || edgeBox.edge.to === highlightNodeId);
     const bothFocused =
       focusedIds !== null &&
       focusedIds.has(edgeBox.edge.from) &&
@@ -642,107 +1009,193 @@ export function WebSvgGraph({
       focusedIds !== null &&
       !bothFocused &&
       (focusedIds.has(edgeBox.edge.from) || focusedIds.has(edgeBox.edge.to));
-    const isHighlighted = isSelectedEdge || bothFocused;
+    const isHighlighted = isConnectedToHighlight || bothFocused;
 
-    let edgeOpacity = 0.85;
+    let edgeOpacity = 0.88;
     if (focusedIds !== null) {
-      edgeOpacity = bothFocused ? 1 : halfFocused ? 0.32 : 0.14;
-    } else if (selectedNodeId !== null) {
-      edgeOpacity = isSelectedEdge ? 1 : 0.2;
+      edgeOpacity = bothFocused ? 1 : halfFocused ? 0.34 : 0.14;
+    } else if (highlightNodeId !== null) {
+      edgeOpacity = isConnectedToHighlight ? 1 : 0.2;
     }
 
-    const strokeColor =
-      edgeBox.edge.kind === "blocks"
-        ? theme.colors.statusDanger
-        : isHighlighted
-          ? theme.colors.accent
-          : theme.colors.foregroundMuted;
-    const dashed =
+    const isBlocks = edgeBox.edge.kind === "blocks";
+    const strokeColor = isBlocks
+      ? theme.colors.statusDanger
+      : isHighlighted
+        ? theme.colors.accent
+        : theme.colors.foregroundMuted;
+    const isAsyncKind =
       edgeBox.edge.kind === "async" ||
       edgeBox.edge.kind === "depends" ||
       edgeBox.isBackEdge;
+    const isFlowAnimated =
+      animateFlow &&
+      !isBlocks &&
+      edgeOpacity > 0.45 &&
+      (isHighlighted ||
+        edgeBox.edge.kind === "data" ||
+        edgeBox.edge.kind === "flow" ||
+        edgeBox.edge.kind === "async");
 
-    const d = `M ${edgeBox.x1} ${edgeBox.y1} C ${edgeBox.cx1} ${edgeBox.cy1}, ${edgeBox.cx2} ${edgeBox.cy2}, ${edgeBox.x2} ${edgeBox.y2}`;
+    const markerEnd = isBlocks
+      ? `url(#${arrowDangerId})`
+      : isHighlighted
+        ? `url(#${arrowAccentId})`
+        : `url(#${arrowId})`;
 
-    children.push(
+    const edgeParts: ReactNode[] = [
+      // Soft base track beneath animated dash stream
+      svgEl("path", {
+        key: "track",
+        d: edgeBox.svgPath,
+        fill: "none",
+        stroke: strokeColor,
+        strokeOpacity: isFlowAnimated ? 0.38 : 1,
+        strokeWidth: isHighlighted ? 2.4 : 1.5,
+        strokeDasharray: isAsyncKind && !isFlowAnimated ? "5 4" : undefined,
+        markerEnd,
+      }),
+    ];
+
+    if (isFlowAnimated) {
+      // Marching data-stream dash overlay
+      edgeParts.push(
+        svgEl(
+          "path",
+          {
+            key: "flow-dash",
+            d: edgeBox.svgPath,
+            fill: "none",
+            stroke: strokeColor,
+            strokeWidth: isHighlighted ? 2.4 : 1.6,
+            strokeDasharray: isHighlighted ? "8 6" : "5 7",
+            strokeLinecap: "round",
+          },
+          svgEl("animate", {
+            attributeName: "stroke-dashoffset",
+            values: "28;0",
+            dur: isHighlighted ? "0.85s" : "1.45s",
+            repeatCount: "indefinite",
+          }),
+        ),
+      );
+
+      // Glowing packet dot riding the exact SmoothStep curve
+      const packetDur = isHighlighted ? "1.45s" : "2.4s";
+      const packetColor = isHighlighted ? theme.colors.accent : strokeColor;
+      edgeParts.push(
+        svgEl(
+          "g",
+          { key: "packet" },
+          svgEl("circle", {
+            cx: 0,
+            cy: 0,
+            r: isHighlighted ? 5.5 : 4,
+            fill: packetColor,
+            fillOpacity: isHighlighted ? 0.28 : 0.16,
+          }),
+          svgEl("circle", {
+            cx: 0,
+            cy: 0,
+            r: isHighlighted ? 2.9 : 2.1,
+            fill: packetColor,
+          }),
+          svgEl("animateMotion", {
+            dur: packetDur,
+            repeatCount: "indefinite",
+            path: edgeBox.svgPath,
+          }),
+        ),
+      );
+    }
+
+    // Crisp pill label along edge
+    if (edgeBox.edge.label) {
+      const clipped = truncateVisualText(edgeBox.edge.label, 24);
+      const pillW = Math.min(188, Math.max(40, visualTextUnits(clipped) * 6.7 + 18));
+      edgeParts.push(
+        svgEl(
+          "g",
+          { key: "label" },
+          svgEl("rect", {
+            x: edgeBox.labelX - pillW / 2,
+            y: edgeBox.labelY - 10,
+            width: pillW,
+            height: 20,
+            rx: 10,
+            fill: theme.colors.surface0,
+            stroke: isHighlighted ? theme.colors.accent : theme.colors.border,
+            strokeWidth: isHighlighted ? 1.3 : 0.9,
+          }),
+          svgEl(
+            "text",
+            {
+              x: edgeBox.labelX,
+              y: edgeBox.labelY + 3.5,
+              textAnchor: "middle",
+              fill: isHighlighted ? theme.colors.foreground : theme.colors.foregroundMuted,
+              fontSize: 10,
+              fontWeight: isHighlighted ? "700" : "500",
+            },
+            clipped,
+          ),
+        ),
+      );
+    }
+
+    stageChildren.push(
       svgEl(
         "g",
         { key: `edge-${edgeBox.index}`, opacity: edgeOpacity },
-        svgEl("path", {
-          d,
-          fill: "none",
-          stroke: strokeColor,
-          strokeWidth: isHighlighted ? 2.8 : 1.7,
-          strokeDasharray: dashed ? "5 4" : undefined,
-          markerEnd: isHighlighted ? "url(#gt-arrow-accent)" : "url(#gt-arrow)",
-        }),
-        edgeBox.edge.label
-          ? (() => {
-              const clipped = truncateVisualText(edgeBox.edge.label, 24);
-              const pillW = Math.min(180, Math.max(36, visualTextUnits(clipped) * 6.8 + 16));
-              return svgEl(
-                "g",
-                null,
-                svgEl("rect", {
-                  x: edgeBox.labelX - pillW / 2,
-                  y: edgeBox.labelY - 9,
-                  width: pillW,
-                  height: 18,
-                  rx: 4,
-                  fill: theme.colors.surface2,
-                  stroke: isHighlighted ? theme.colors.accent : theme.colors.border,
-                  strokeWidth: isHighlighted ? 1.2 : 0.9,
-                }),
-                svgEl(
-                  "text",
-                  {
-                    x: edgeBox.labelX,
-                    y: edgeBox.labelY + 3.5,
-                    textAnchor: "middle",
-                    fill: isHighlighted ? theme.colors.foreground : theme.colors.foregroundMuted,
-                    fontSize: 10,
-                    fontWeight: isHighlighted ? "700" : "500",
-                  },
-                  clipped,
-                ),
-              );
-            })()
-          : null,
+        ...edgeParts,
       ),
     );
   }
 
-  // Nodes
+  // 3. Nodes (React Flow-styled cards + pills + icons + drag + glow)
   for (const box of layout.nodes) {
     const { node, x, y, width, height } = box;
     const isSelected = selectedNodeId === node.id;
+    const isHovered = hoveredNodeId === node.id;
     const isFocusTarget = focusedIds ? focusedIds.has(node.id) : false;
     const isDimmed =
       (focusedIds !== null && !isFocusTarget) ||
-      (focusedIds === null && selectedNodeId !== null && !connectedNodes.has(node.id));
+      (focusedIds === null && highlightNodeId !== null && !connectedNodes.has(node.id));
 
+    const isPill =
+      (node.type === "actor" || node.type === "client" || node.type === "person") &&
+      !node.fields?.length &&
+      !node.items?.length &&
+      !node.value &&
+      !node.image;
+
+    const cardRx = isPill ? Math.min(height / 2, 26) : node.type === "decision" ? 16 : 12;
     const sColor = statusHex(node.status, theme);
-    const isAccented = isSelected || isFocusTarget || node.emphasis;
-    const borderColor = isAccented ? theme.colors.accent : theme.colors.border;
+    const badgeColor = typeAccentColor(node.type, theme);
+    const isLit = isSelected || isFocusTarget || isHovered;
+    const isAccented = isLit || Boolean(node.emphasis);
 
     const inner: ReactNode[] = [];
-    if (isFocusTarget || isSelected) {
+
+    // Outer subtle accent ring when focused/selected
+    if (isSelected || isFocusTarget) {
       inner.push(
         svgEl("rect", {
           key: "halo",
-          x: x - 4,
-          y: y - 4,
-          width: width + 8,
-          height: height + 8,
-          rx: node.type === "decision" ? 20 : 13,
+          x: x - 3.5,
+          y: y - 3.5,
+          width: width + 7,
+          height: height + 7,
+          rx: cardRx + 3.5,
           fill: "none",
           stroke: theme.colors.accent,
-          strokeOpacity: 0.34,
-          strokeWidth: 5,
+          strokeOpacity: 0.25,
+          strokeWidth: 4,
         }),
       );
     }
 
+    // Card surface
     inner.push(
       svgEl("rect", {
         key: "bg",
@@ -750,34 +1203,101 @@ export function WebSvgGraph({
         y,
         width,
         height,
-        rx: node.type === "decision" ? 16 : 9,
-        fill: isFocusTarget || isSelected ? theme.colors.surface2 : theme.colors.surface1,
-        stroke: borderColor,
-        strokeWidth: isFocusTarget || isSelected ? 2.5 : node.emphasis ? 1.8 : 1,
+        rx: cardRx,
+        fill: isSelected || isFocusTarget ? theme.colors.surface1 : theme.colors.surface0,
+        stroke: isAccented ? theme.colors.accent : theme.colors.border,
+        strokeWidth: isSelected || isFocusTarget ? 2 : isHovered || node.emphasis ? 1.6 : 1.1,
+        filter: isSelected || isFocusTarget ? `url(#${glowFilterId})` : `url(#${shadowFilterId})`,
       }),
-      svgEl(
-        "text",
-        {
-          key: "kind",
-          x: x + 10,
-          y: y + 15,
-          fill: isFocusTarget ? theme.colors.accent : theme.colors.foregroundMuted,
-          fontSize: 9.5,
-          fontWeight: "700",
-        },
-        (node.type ?? "service").toUpperCase(),
+    );
+
+    // Subtle React Flow handle dots along primary flow axis
+    const isHorizontalFlow = layout.direction === "right" || layout.direction === "left";
+    const portFill = isLit ? theme.colors.accent : theme.colors.surface2;
+    const portStroke = isLit ? theme.colors.surface0 : theme.colors.border;
+    if (isHorizontalFlow) {
+      inner.push(
+        svgEl("circle", {
+          key: "port-l",
+          cx: x,
+          cy: y + height / 2,
+          r: 3.1,
+          fill: portFill,
+          stroke: portStroke,
+          strokeWidth: 1.1,
+        }),
+        svgEl("circle", {
+          key: "port-r",
+          cx: x + width,
+          cy: y + height / 2,
+          r: 3.1,
+          fill: portFill,
+          stroke: portStroke,
+          strokeWidth: 1.1,
+        }),
+      );
+    } else {
+      inner.push(
+        svgEl("circle", {
+          key: "port-t",
+          cx: x + width / 2,
+          cy: y,
+          r: 3.1,
+          fill: portFill,
+          stroke: portStroke,
+          strokeWidth: 1.1,
+        }),
+        svgEl("circle", {
+          key: "port-b",
+          cx: x + width / 2,
+          cy: y + height,
+          r: 3.1,
+          fill: portFill,
+          stroke: portStroke,
+          strokeWidth: 1.1,
+        }),
+      );
+    }
+
+    // Left icon badge
+    const badgeSize = 28;
+    const badgeX = x + 12;
+    const badgeY = isPill ? y + (height - badgeSize) / 2 : y + 14;
+    inner.push(
+      svgEl("rect", {
+        key: "badge-bg",
+        x: badgeX,
+        y: badgeY,
+        width: badgeSize,
+        height: badgeSize,
+        rx: isPill ? badgeSize / 2 : 8,
+        fill: badgeColor,
+        fillOpacity: 0.14,
+        stroke: badgeColor,
+        strokeOpacity: 0.28,
+        strokeWidth: 0.9,
+      }),
+      renderNodeBadgeGlyph(
+        node.type,
+        badgeX + badgeSize / 2,
+        badgeY + badgeSize / 2,
+        badgeColor,
+        node.label || node.id,
       ),
     );
 
+    // Top-right STEP N pill or status indicator dot
+    let rightReserved = 14;
     if (isFocusTarget && activeStepNumber !== null) {
       const badgeText = `STEP ${activeStepNumber}`;
-      const badgeW = badgeText.length * 5.8 + 12;
+      const pillW = badgeText.length * 5.6 + 12;
+      rightReserved = pillW + 14;
       inner.push(
         svgEl("rect", {
           key: "step-pill-bg",
-          x: x + width - badgeW - 6,
-          y: y + 5,
-          width: badgeW,
+          x: x + width - pillW - 8,
+          y: y + 6,
+          width: pillW,
           height: 15,
           rx: 7.5,
           fill: theme.colors.accent,
@@ -786,8 +1306,8 @@ export function WebSvgGraph({
           "text",
           {
             key: "step-pill-txt",
-            x: x + width - badgeW / 2 - 6,
-            y: y + 15,
+            x: x + width - pillW / 2 - 8,
+            y: y + 16,
             textAnchor: "middle",
             fill: theme.colors.accentForeground,
             fontSize: 8.5,
@@ -797,49 +1317,54 @@ export function WebSvgGraph({
         ),
       );
     } else if (sColor) {
+      rightReserved = 20;
       inner.push(
         svgEl("circle", {
           key: "dot",
           cx: x + width - 12,
-          cy: y + 12,
-          r: 4,
+          cy: y + 13,
+          r: 3.8,
           fill: sColor,
         }),
       );
     }
 
-    const maxUnits = Math.max(12, (width - 20) / 7.5);
+    // Primary label + sublabel aligned right of the icon badge
+    const textX = badgeX + badgeSize + 10;
+    const maxUnits = Math.max(10, (width - (textX - x) - rightReserved) / 7.5);
+    const labelY = isPill ? (node.sublabel ? y + 23 : y + height / 2 + 4.5) : y + 26;
+
     inner.push(
       svgEl(
         "text",
         {
           key: "lbl",
-          x: x + 10,
-          y: y + 32,
+          x: textX,
+          y: labelY,
           fill: theme.colors.foreground,
           fontSize: 12.5,
-          fontWeight: "700",
+          fontWeight: "600",
         },
         truncateVisualText(node.label, maxUnits),
       ),
     );
 
-    let lineY = y + 48;
+    let lineY = labelY + 16;
     if (node.sublabel) {
       inner.push(
         svgEl(
           "text",
           {
             key: "sub",
-            x: x + 10,
+            x: textX,
             y: lineY,
             fill: theme.colors.foregroundMuted,
             fontSize: 10.5,
           },
-          truncateVisualText(node.sublabel, maxUnits * 1.1),
+          truncateVisualText(node.sublabel, maxUnits * 1.15),
         ),
       );
-      lineY += 16;
+      lineY += 18;
     }
 
     if (node.value !== undefined) {
@@ -848,8 +1373,8 @@ export function WebSvgGraph({
           "text",
           {
             key: "val",
-            x: x + 10,
-            y: lineY + 2,
+            x: x + 14,
+            y: Math.max(lineY + 6, y + 60),
             fill: theme.colors.accent,
             fontSize: 14,
             fontWeight: "700",
@@ -857,28 +1382,29 @@ export function WebSvgGraph({
           String(node.value),
         ),
       );
-      lineY += 20;
+      lineY += 22;
     }
 
+    let extraY = Math.max(lineY + 2, y + 54);
     for (const [fIdx, field] of (node.fields ?? []).slice(0, 6).entries()) {
-      const keyTag = field.key ? `[${field.key}] ` : "";
+      const keyTag = field.key ? `${field.key.toUpperCase()} ` : "";
       inner.push(
         svgEl(
           "text",
           {
             key: `fld-${fIdx}`,
-            x: x + 10,
-            y: lineY,
+            x: x + 14,
+            y: extraY,
             fill: theme.colors.foregroundMuted,
             fontSize: 10,
           },
           truncateVisualText(
             `${keyTag}${field.name}${field.type ? `: ${field.type}` : ""}`,
-            maxUnits * 1.15,
+            (width - 28) / 6.5,
           ),
         ),
       );
-      lineY += 15;
+      extraY += 16;
     }
 
     for (const [iIdx, item] of (node.items ?? []).slice(0, 6).entries()) {
@@ -888,25 +1414,30 @@ export function WebSvgGraph({
           "text",
           {
             key: `itm-${iIdx}`,
-            x: x + 10,
-            y: lineY,
+            x: x + 14,
+            y: extraY,
             fill: theme.colors.foregroundMuted,
             fontSize: 10,
           },
-          truncateVisualText(`${mark} ${item.label}`, maxUnits * 1.15),
+          truncateVisualText(`${mark} ${item.label}`, (width - 28) / 6.5),
         ),
       );
-      lineY += 15;
+      extraY += 16;
     }
 
-    children.push(
+    stageChildren.push(
       svgEl(
         "g",
         {
           key: `node-${node.id}`,
-          opacity: isDimmed ? 0.18 : 1,
-          style: { cursor: "pointer" },
-          onClick: () => onSelectNode(isSelected ? null : node.id),
+          opacity: isDimmed ? 0.22 : 1,
+          style: { cursor: draggingMode === "node" ? "grabbing" : "grab" },
+          onMouseEnter: () => onHoverNode(node.id),
+          onMouseLeave: () => {
+            if (hoveredNodeId === node.id) onHoverNode(null);
+          },
+          onPointerDown: (e: SvgPointerEventLike) =>
+            startDrag(e, "node", [node.id], node.id),
         },
         ...inner,
       ),
@@ -916,11 +1447,40 @@ export function WebSvgGraph({
   return svgEl(
     "svg",
     {
-      width: Math.max(240, Math.round(layout.width * scale)),
-      height: Math.max(120, Math.round(layout.height * scale)),
-      viewBox: `0 0 ${layout.width} ${layout.height}`,
-      style: { display: "block" },
+      width: "100%",
+      height: viewportHeight,
+      style: {
+        display: "block",
+        width: "100%",
+        height: viewportHeight,
+        touchAction: "none",
+        userSelect: "none",
+        WebkitUserSelect: "none",
+        cursor: draggingMode === "idle" ? "grab" : "grabbing",
+      },
+      onPointerDown: (e: SvgPointerEventLike) => startDrag(e, "pan", [], null),
+      onPointerMove: handlePointerMove,
+      onPointerUp: finishDrag,
+      onPointerCancel: finishDrag,
+      onWheel: handleWheel,
     },
-    ...children,
+    defs,
+    svgEl("rect", {
+      key: "dot-grid",
+      x: 0,
+      y: 0,
+      width: "100%",
+      height: "100%",
+      fill: `url(#${gridPatternId})`,
+    }),
+    svgEl(
+      "g",
+      {
+        key: "stage",
+        transform: `translate(${transform.x} ${transform.y}) scale(${transform.scale})`,
+      },
+      ...stageChildren,
+    ),
   );
 }
+

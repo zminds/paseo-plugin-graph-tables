@@ -171,6 +171,16 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
     (resolvedSpec.type === "chart" ||
       (resolvedSpec.type === "table" && hasNumericColumn(rows, columns)));
   const hasExplicitSearch = (resolvedSpec.controls ?? []).some((c) => c.type === "search");
+  const graphNodesCount =
+    effectiveType === "graph"
+      ? (resolvedSpec.nodes ?? []).filter((n) => n.type !== "group").length
+      : 0;
+  const graphStepsCount =
+    effectiveType === "graph" ? (resolvedSpec.steps ?? []).length : 0;
+  const graphMetaLabel =
+    effectiveType === "graph" && graphNodesCount > 0
+      ? `${graphNodesCount} ${graphNodesCount === 1 ? "part" : "parts"}${graphStepsCount > 0 ? ` · ${graphStepsCount} ${graphStepsCount === 1 ? "step" : "steps"}` : ""}`
+      : null;
 
   const styles = useMemo(
     () => ({
@@ -375,6 +385,11 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
           </Text>
         </View>
         <View style={styles.actions}>
+          {graphMetaLabel ? (
+            <Text style={{ fontSize: 11, color: theme.colors.foregroundMuted }}>
+              {graphMetaLabel}
+            </Text>
+          ) : null}
           {canToggleTableChart ? (
             <Pressable
               accessibilityRole="button"
