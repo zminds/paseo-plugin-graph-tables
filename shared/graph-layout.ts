@@ -48,6 +48,7 @@ export interface PositionedEdge {
   x2: number;
   y2: number;
   svgPath: string;
+  routePoints: readonly Point[];
   labelX: number;
   labelY: number;
   isBackEdge: boolean;
@@ -429,6 +430,7 @@ function routeEdges(
         x2: 0,
         y2: 0,
         svgPath: "M 0 0 L 0 0",
+        routePoints: [],
         labelX: 0,
         labelY: 0,
         isBackEdge: false,
@@ -457,6 +459,7 @@ function routeEdges(
         x2,
         y2,
         svgPath: polylineToSmoothStepPath(pts),
+        routePoints: pts,
         labelX: (x1 + x2) / 2,
         labelY: loopY,
         isBackEdge: true,
@@ -572,6 +575,7 @@ function routeEdges(
           x2,
           y2,
           svgPath: polylineToSmoothStepPath(pts),
+          routePoints: pts,
           labelX: label.x,
           labelY: label.y,
           isBackEdge: true,
@@ -611,6 +615,7 @@ function routeEdges(
           x2,
           y2,
           svgPath: polylineToSmoothStepPath(directPts),
+          routePoints: directPts,
           labelX: label.x,
           labelY: label.y,
           isBackEdge,
@@ -658,6 +663,7 @@ function routeEdges(
         x2,
         y2,
         svgPath: polylineToSmoothStepPath(bypassPts),
+        routePoints: bypassPts,
         labelX: label.x,
         labelY: label.y,
         isBackEdge,
@@ -720,6 +726,7 @@ function routeEdges(
         x2,
         y2,
         svgPath: polylineToSmoothStepPath(pts),
+        routePoints: pts,
         labelX: label.x,
         labelY: label.y,
         isBackEdge: true,
@@ -758,6 +765,7 @@ function routeEdges(
         x2,
         y2,
         svgPath: polylineToSmoothStepPath(directPts),
+        routePoints: directPts,
         labelX: label.x,
         labelY: label.y,
         isBackEdge,
@@ -799,6 +807,7 @@ function routeEdges(
       x2,
       y2,
       svgPath: polylineToSmoothStepPath(bypassPts),
+      routePoints: bypassPts,
       labelX: label.x,
       labelY: label.y,
       isBackEdge,

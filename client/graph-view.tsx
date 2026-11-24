@@ -7,20 +7,21 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { copyText, Icon, Markdown, useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Linking, Pressable, ScrollView, Text, View } from "react-native";
+import { Linking, Pressable, ScrollView, Text, View, type LayoutChangeEvent } from "react-native";
 import {
   applyGraphOffsets,
   type GraphLayoutInput,
-  type GraphLayoutResult,
   layoutGraph,
   type NodeOffsetMap,
   type PositionedNode,
 } from "../shared/graph-layout";
+import { computeFittedTransform, type GraphViewTransform, zoomAroundPoint } from "../shared/graph-viewport";
 import { exportViewRpc } from "../shared/rpc";
 import { exportGraphToSvg } from "../shared/svg-export";
-import type { GraphNode, GraphSpec } from "../shared/view-schema";
+import type { GraphSpec } from "../shared/view-schema";
 import { ActionPopoverMenu, IconPillButton } from "./action-menu";
-import { type GraphViewTransform, isWebPlatform, rasterizeSvgToPngBase64, WebSvgGraph } from "./web";
+import { NativeGraph } from "./native-graph";
+import { isWebPlatform, rasterizeSvgToPngBase64, WebSvgGraph } from "./web";
 
 export interface GraphViewProps {
   spec: GraphLayoutInput;
@@ -31,77 +32,6 @@ export interface GraphViewProps {
   viewId?: string;
   onExpand?(): void;
   specJson?: string;
-}
-
-function statusColor(status: GraphNode["status"], theme: PluginTheme): string {
-  switch (status) {
-    case "done":
-      return theme.colors.statusSuccess;
-    case "active":
-    case "review":
-      return theme.colors.accent;
-    case "blocked":
-      return theme.colors.statusWarning;
-    case "failed":
-      return theme.colors.statusDanger;
-    default:
-      return theme.colors.foregroundMuted;
-  }
-}
-
-function computeFittedTransform(
-  layout: GraphLayoutResult,
-  viewportWidth: number,
-  viewportHeight: number,
-  focusIds: ReadonlySet<string> | null,
-): GraphViewTransform {
-  const vw = Math.max(260, viewportWidth);
-  const vh = Math.max(220, viewportHeight);
-
-  const targets: Array<{ x: number; y: number; width: number; height: number }> = [];
-  if (focusIds && focusIds.size > 0) {
-    for (const pn of layout.nodes) {
-      if (focusIds.has(pn.node.id)) targets.push(pn);
-    }
-    for (const pg of layout.groups) {
-      if (pg.memberIds.some((id) => focusIds.has(id))) targets.push(pg);
-    }
-  } else {
-    targets.push(...layout.nodes, ...layout.groups);
-  }
-
-  if (targets.length === 0) {
-    return { x: 24, y: 24, scale: 1 };
-  }
-
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  for (const r of targets) {
-    if (r.x < minX) minX = r.x;
-    if (r.y < minY) minY = r.y;
-    if (r.x + r.width > maxX) maxX = r.x + r.width;
-    if (r.y + r.height > maxY) maxY = r.y + r.height;
-  }
-
-  const contentW = Math.max(120, maxX - minX);
-  const contentH = Math.max(100, maxY - minY);
-  const padX = vw < 480 ? 28 : 52;
-  const padY = vh < 340 ? 28 : 48;
-
-  const rawScale = Math.min((vw - padX * 2) / contentW, (vh - padY * 2) / contentH);
-  const maxAllowedScale = focusIds && focusIds.size > 0 ? 1.15 : 1.08;
-  const scale = Math.round(Math.max(0.42, Math.min(maxAllowedScale, rawScale)) * 100) / 100;
-
-  const cx = minX + contentW / 2;
-  const cy = minY + contentH / 2;
-
-  return {
-    x: Math.round((vw / 2 - cx * scale) * 10) / 10,
-    y: Math.round((vh / 2 - cy * scale) * 10) / 10,
-    scale,
-  };
 }
 
 export function GraphView({
@@ -146,29 +76,26 @@ export function GraphView({
     return set;
   }, [activeStep]);
 
-  const effectiveSpec = useMemo<GraphLayoutInput>(
-    () => (directionOverride ? { ...spec, direction: directionOverride } : spec),
-    [spec, directionOverride],
-  );
+  const narrowCanvas = compact || (viewportSize.width > 0 && viewportSize.width < 480);
+  const direction = directionOverride ?? spec.direction ?? (narrowCanvas ? "down" : "right");
+  const effectiveSpec = useMemo<GraphLayoutInput>(() => ({ ...spec, direction }), [spec, direction]);
 
   const baseLayout = useMemo(() => layoutGraph(effectiveSpec), [effectiveSpec]);
   const layout = useMemo(() => applyGraphOffsets(baseLayout, nodeOffsets), [baseLayout, nodeOffsets]);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
 
-  const targetCanvasHeight = expanded
-    ? Math.max(480, Math.min(720, Math.max(baseLayout.height + 40, 540)))
-    : compact
-      ? 350
+  const targetCanvasHeight = narrowCanvas
+    ? (expanded ? 420 : 300)
+    : expanded
+      ? Math.min(720, Math.max(baseLayout.height + 40, 540))
       : Math.max(380, Math.min(480, baseLayout.height + 52));
-
-  const fittedSignatureRef = useRef<string>("");
 
   const handleFitView = useCallback(
     (focus: ReadonlySet<string> | null = null, targetLayout = layoutRef.current) => {
-      const vw = viewportSize.width || (expanded ? 860 : compact ? 340 : 680);
-      const vh = viewportSize.height || targetCanvasHeight;
-      setTransform(computeFittedTransform(targetLayout, vw, vh, focus));
+      const width = viewportSize.width || (compact ? 340 : expanded ? 860 : 680);
+      const height = viewportSize.height || targetCanvasHeight;
+      setTransform(computeFittedTransform(targetLayout, width, height, focus));
     },
     [viewportSize.width, viewportSize.height, expanded, compact, targetCanvasHeight],
   );
@@ -184,50 +111,12 @@ export function GraphView({
       setStepIndex(null);
       setIsPlaying(false);
       setExportMenuOpen(false);
-      fittedSignatureRef.current = "";
     }
   }, [spec]);
 
-  // Fit diagram when layout or initial viewport dimensions settle
   useEffect(() => {
-    if (viewportSize.width <= 0) return;
-    const sig = `${spec.title ?? ""}|${effectiveSpec.direction ?? "right"}|${baseLayout.nodes.length}|${expanded ? "1" : "0"}|${Math.round(viewportSize.width / 20)}`;
-    if (fittedSignatureRef.current === sig) return;
-    fittedSignatureRef.current = sig;
-    setTransform(
-      computeFittedTransform(
-        baseLayout,
-        viewportSize.width,
-        viewportSize.height || targetCanvasHeight,
-        focusedIds,
-      ),
-    );
-  }, [
-    spec.title,
-    effectiveSpec.direction,
-    baseLayout,
-    viewportSize.width,
-    viewportSize.height,
-    targetCanvasHeight,
-    expanded,
-    focusedIds,
-  ]);
-
-  // Smoothly focus camera on active step targets when stepping through walkthrough
-  const prevStepIdxRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (prevStepIdxRef.current === stepIndex) return;
-    prevStepIdxRef.current = stepIndex;
-    if (viewportSize.width <= 0) return;
-    setTransform(
-      computeFittedTransform(
-        layoutRef.current,
-        viewportSize.width,
-        viewportSize.height || targetCanvasHeight,
-        focusedIds,
-      ),
-    );
-  }, [stepIndex, focusedIds, viewportSize.width, viewportSize.height, targetCanvasHeight]);
+    if (viewportSize.width > 0) handleFitView(focusedIds);
+  }, [baseLayout, viewportSize.width, focusedIds, handleFitView]);
 
   // Auto-advance walkthrough when playing
   useEffect(() => {
@@ -263,26 +152,14 @@ export function GraphView({
   const isVerticalFlow = effectiveDirection === "down" || effectiveDirection === "up";
 
   const zoomBy = (factor: number) => {
-    const vw = viewportSize.width || 600;
-    const vh = viewportSize.height || targetCanvasHeight;
-    setTransform((cur) => {
-      const nextScale = Math.max(0.35, Math.min(2.4, Math.round(cur.scale * factor * 100) / 100));
-      if (nextScale === cur.scale) return cur;
-      const anchorX = vw / 2;
-      const anchorY = vh / 2;
-      const gx = (anchorX - cur.x) / cur.scale;
-      const gy = (anchorY - cur.y) / cur.scale;
-      return {
-        scale: nextScale,
-        x: anchorX - gx * nextScale,
-        y: anchorY - gy * nextScale,
-      };
-    });
+    const width = viewportSize.width || 600;
+    const height = viewportSize.height || targetCanvasHeight;
+    setTransform((current) => zoomAroundPoint(current, factor, width / 2, height / 2));
   };
 
   const toggleDirection = () => {
     setNodeOffsets({});
-    setDirectionOverride((cur) => ((cur ?? spec.direction ?? "right") === "right" ? "down" : "right"));
+    setDirectionOverride(isVerticalFlow ? "right" : "down");
   };
 
   const buildExportSvg = () =>
@@ -343,151 +220,26 @@ export function GraphView({
     }
   };
 
-  const renderNativeGraph = () => {
-    const groupsById = new Map((spec.nodes ?? []).filter((n) => n.type === "group").map((g) => [g.id, g]));
-    const nodes = layout.nodes;
-
-    return (
-      <View style={{ gap: 10 }}>
-        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 4 }}>
-          <IconPillButton
-            icon="Code"
-            label="JSON"
-            size={24}
-            theme={theme}
-            onPress={() => void handleCopyJson()}
-          />
-          <IconPillButton
-            icon="Copy"
-            label="SVG"
-            size={24}
-            theme={theme}
-            onPress={() => void handleCopySvg()}
-          />
-          <IconPillButton
-            icon="Download"
-            label="PNG"
-            size={24}
-            disabled={exporting}
-            theme={theme}
-            onPress={() => void handleSaveExport("png")}
-          />
-        </View>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          {nodes.map(({ node }) => {
-            const isSelected = selectedNodeId === node.id;
-            const isFocus = focusedIds ? focusedIds.has(node.id) : false;
-            const dimmed = focusedIds !== null && !isFocus;
-            const grpLabel = node.group ? groupsById.get(node.group)?.label : undefined;
-
-            return (
-              <Pressable
-                key={node.id}
-                onPress={() => setSelectedNodeId(isSelected ? null : node.id)}
-                style={{
-                  minWidth: compact ? "100%" : 175,
-                  flexGrow: 1,
-                  padding: 10,
-                  borderRadius: 10,
-                  borderWidth: isSelected || isFocus ? 2 : 1,
-                  borderColor:
-                    isSelected || isFocus || node.emphasis ? theme.colors.accent : theme.colors.border,
-                  backgroundColor: isSelected || isFocus ? theme.colors.surface2 : theme.colors.surface1,
-                  opacity: dimmed ? 0.35 : 1,
-                  gap: 4,
-                }}
-              >
-                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                  <Text
-                    style={{
-                      fontSize: 10,
-                      fontWeight: "700",
-                      color: isFocus ? theme.colors.accent : theme.colors.foregroundMuted,
-                    }}
-                  >
-                    {(node.type ?? "service").toUpperCase()}
-                    {grpLabel ? ` · ${grpLabel}` : ""}
-                  </Text>
-                  {isFocus && activeStepNumber !== null ? (
-                    <View
-                      style={{
-                        paddingHorizontal: 6,
-                        paddingVertical: 1,
-                        borderRadius: 99,
-                        backgroundColor: theme.colors.accent,
-                      }}
-                    >
-                      <Text style={{ fontSize: 9, fontWeight: "700", color: theme.colors.accentForeground }}>
-                        STEP {activeStepNumber}
-                      </Text>
-                    </View>
-                  ) : node.status ? (
-                    <View
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 4,
-                        backgroundColor: statusColor(node.status, theme),
-                      }}
-                    />
-                  ) : null}
-                </View>
-                <Text style={{ fontSize: 13, fontWeight: "700", color: theme.colors.foreground }}>
-                  {node.label}
-                </Text>
-                {node.sublabel ? (
-                  <Text style={{ fontSize: 11, color: theme.colors.foregroundMuted }}>{node.sublabel}</Text>
-                ) : null}
-                {node.value !== undefined ? (
-                  <Text style={{ fontSize: 14, fontWeight: "700", color: theme.colors.accent }}>
-                    {String(node.value)}
-                  </Text>
-                ) : null}
-              </Pressable>
-            );
-          })}
-        </View>
-        {layout.edges.length > 0 ? (
-          <View style={{ gap: 4 }}>
-            <Text style={{ fontSize: 11, fontWeight: "700", color: theme.colors.foregroundMuted }}>
-              Connections
-            </Text>
-            {layout.edges.map((edgeBox) => {
-              const e = edgeBox.edge;
-              const activeEdge =
-                focusedIds !== null && focusedIds.has(e.from) && focusedIds.has(e.to);
-              return (
-                <Text
-                  key={`ne-${edgeBox.index}`}
-                  style={{
-                    fontSize: 12,
-                    color: activeEdge ? theme.colors.accent : theme.colors.foregroundMuted,
-                    fontWeight: activeEdge ? "700" : "400",
-                    opacity: focusedIds !== null && !activeEdge ? 0.38 : 1,
-                  }}
-                >
-                  {e.from} {e.kind === "async" ? "⇢" : "→"} {e.to}
-                  {e.label ? `  (${e.label})` : ""}
-                </Text>
-              );
-            })}
-          </View>
-        ) : null}
-      </View>
+  const handleViewportLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
+    const width = Math.round(nativeEvent.layout.width);
+    const height = Math.round(nativeEvent.layout.height);
+    if (width <= 0 || height <= 0) return;
+    setViewportSize((previous) =>
+      previous.width === width && previous.height === height ? previous : { width, height },
     );
+  }, []);
+
+  const togglePlayback = () => {
+    setExportMenuOpen(false);
+    if (!isPlaying && stepIndex === null) setStepIndex(0);
+    setIsPlaying(!isPlaying);
   };
 
   return (
     <View style={{ gap: 8 }}>
       {isWebPlatform ? (
         <View
-          onLayout={(e) => {
-            const nextW = Math.round(e.nativeEvent.layout.width);
-            const nextH = Math.round(e.nativeEvent.layout.height);
-            if (nextW > 0 && (nextW !== viewportSize.width || nextH !== viewportSize.height)) {
-              setViewportSize({ width: nextW, height: nextH });
-            }
-          }}
+          onLayout={handleViewportLayout}
           style={{
             position: "relative",
             width: "100%",
@@ -504,7 +256,6 @@ export function GraphView({
           <WebSvgGraph
             layout={layout}
             theme={theme}
-            viewportWidth={viewportSize.width || 640}
             viewportHeight={viewportSize.height || targetCanvasHeight}
             transform={transform}
             selectedNodeId={selectedNodeId}
@@ -512,7 +263,7 @@ export function GraphView({
             focusedIds={focusedIds}
             activeStepNumber={activeStepNumber}
             animateFlow={animateFlow}
-            enableWheelZoom={expanded}
+            enableTouchGestures={expanded}
             onTransformChange={setTransform}
             onShiftNodes={handleShiftNodes}
             onHoverNode={setHoveredNodeId}
@@ -550,15 +301,7 @@ export function GraphView({
                 active={isPlaying}
                 tooltip={isPlaying ? "暂停导览" : "带我看一遍"}
                 theme={theme}
-                onPress={() => {
-                  setExportMenuOpen(false);
-                  if (isPlaying) {
-                    setIsPlaying(false);
-                  } else {
-                    if (stepIndex === null) setStepIndex(0);
-                    setIsPlaying(true);
-                  }
-                }}
+                onPress={togglePlayback}
               />
             ) : null}
 
@@ -729,12 +472,107 @@ export function GraphView({
             }}
           >
             <Text style={{ fontSize: 10, color: theme.colors.foregroundMuted }}>
-              {expanded ? "Drag nodes · Pan · Wheel zoom" : "Drag nodes · Pan · Ctrl+Wheel zoom"}
+              {narrowCanvas ? (expanded ? "双指缩放 · 拖动平移" : "点按节点查看详情") : "拖动平移 · 滚轮缩放"}
             </Text>
           </View>
         </View>
       ) : (
-        renderNativeGraph()
+        <View>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", paddingHorizontal: 6 }}>
+            {hasSteps ? (
+              <IconPillButton
+                icon={isPlaying ? "Pause" : "Play"}
+                tooltip={isPlaying ? "暂停导览" : "带我看一遍"}
+                active={isPlaying}
+                size={44}
+                iconSize={16}
+                theme={theme}
+                onPress={togglePlayback}
+              />
+            ) : null}
+            <IconPillButton
+              icon="Code"
+              label="JSON"
+              tooltip="拷贝为 JSON"
+              size={44}
+              theme={theme}
+              onPress={() => void handleCopyJson()}
+            />
+            <IconPillButton
+              icon="Copy"
+              label="SVG"
+              tooltip="拷贝为 SVG"
+              size={44}
+              theme={theme}
+              onPress={() => void handleCopySvg()}
+            />
+            <IconPillButton
+              icon="Download"
+              label="PNG"
+              tooltip="保存为 PNG"
+              size={44}
+              disabled={exporting}
+              theme={theme}
+              onPress={() => void handleSaveExport("png")}
+            />
+            {!expanded && onExpand ? (
+              <IconPillButton
+                icon="Maximize2"
+                tooltip="在完整窗口中打开"
+                size={44}
+                iconSize={16}
+                theme={theme}
+                onPress={onExpand}
+              />
+            ) : null}
+          </View>
+          <NativeGraph
+            layout={layout}
+            theme={theme}
+            height={targetCanvasHeight}
+            expanded={expanded}
+            transform={transform}
+            selectedNodeId={selectedNodeId}
+            focusedIds={focusedIds}
+            onLayout={handleViewportLayout}
+            onTransformChange={setTransform}
+            onSelectNode={setSelectedNodeId}
+          />
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              alignItems: "center",
+              paddingHorizontal: 6,
+              borderTopWidth: 1,
+              borderTopColor: theme.colors.border,
+            }}
+          >
+            <IconPillButton icon="Minus" tooltip="缩小" size={44} iconSize={16} theme={theme} onPress={() => zoomBy(0.8)} />
+            <Text style={{ color: theme.colors.foregroundMuted, minWidth: 38, textAlign: "center" }}>
+              {Math.round(transform.scale * 100)}%
+            </Text>
+            <IconPillButton icon="Plus" tooltip="放大" size={44} iconSize={16} theme={theme} onPress={() => zoomBy(1.25)} />
+            <IconPillButton
+              icon="Scan"
+              label="适配"
+              tooltip="适合视图"
+              size={44}
+              iconSize={16}
+              theme={theme}
+              onPress={() => handleFitView(focusedIds)}
+            />
+            <IconPillButton
+              icon={isVerticalFlow ? "ChevronRight" : "ChevronDown"}
+              label={isVerticalFlow ? "横排" : "竖排"}
+              tooltip={isVerticalFlow ? "从左到右布局" : "从上到下布局"}
+              size={44}
+              iconSize={16}
+              theme={theme}
+              onPress={toggleDirection}
+            />
+          </View>
+        </View>
       )}
 
       {/* Compact Step Walkthrough Bar */}

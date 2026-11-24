@@ -3,9 +3,10 @@
  * rasterizer, re-implemented after Beluga (https://github.com/beluga-labs/beluga).
  */
 import type { PluginTheme } from "@getpaseo/plugin";
-import { createElement, type ReactElement, type ReactNode, useId, useRef, useState } from "react";
+import { createElement, type ReactElement, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Platform } from "react-native";
 import type { GraphLayoutResult, PositionedNode } from "../shared/graph-layout";
+import { type GraphViewTransform, zoomAroundPoint } from "../shared/graph-viewport";
 import { truncateVisualText, visualTextUnits } from "../shared/query-engine";
 import {
   arcSlicePath,
@@ -663,16 +664,9 @@ export function WebSvgChart({
   );
 }
 
-export interface GraphViewTransform {
-  x: number;
-  y: number;
-  scale: number;
-}
-
 export interface WebSvgGraphProps {
   layout: GraphLayoutResult;
   theme: PluginTheme;
-  viewportWidth: number;
   viewportHeight: number;
   transform: GraphViewTransform;
   selectedNodeId: string | null;
@@ -680,7 +674,7 @@ export interface WebSvgGraphProps {
   focusedIds: ReadonlySet<string> | null;
   activeStepNumber?: number | null;
   animateFlow?: boolean;
-  enableWheelZoom?: boolean;
+  enableTouchGestures?: boolean;
   onTransformChange(next: GraphViewTransform): void;
   onShiftNodes(nodeIds: readonly string[], dx: number, dy: number): void;
   onHoverNode(id: string | null): void;
@@ -689,6 +683,7 @@ export interface WebSvgGraphProps {
 
 interface SvgPointerEventLike {
   button?: number;
+  pointerType: string;
   pointerId: number;
   clientX: number;
   clientY: number;
@@ -702,16 +697,22 @@ interface SvgPointerEventLike {
 }
 
 interface SvgWheelEventLike {
+  deltaMode: number;
   deltaY: number;
-  ctrlKey: boolean;
-  metaKey: boolean;
   clientX: number;
   clientY: number;
   preventDefault(): void;
   stopPropagation(): void;
-  currentTarget: {
-    getBoundingClientRect?(): { left: number; top: number; width: number; height: number };
-  };
+}
+
+interface GraphSvgElement {
+  getBoundingClientRect(): { left: number; top: number; width: number; height: number };
+  addEventListener(
+    type: "wheel",
+    listener: (event: SvgWheelEventLike) => void,
+    options: { passive: boolean },
+  ): void;
+  removeEventListener(type: "wheel", listener: (event: SvgWheelEventLike) => void): void;
 }
 
 interface ActiveDragState {
@@ -870,7 +871,6 @@ function renderNodeBadgeGlyph(
 export function WebSvgGraph({
   layout,
   theme,
-  viewportWidth,
   viewportHeight,
   transform,
   selectedNodeId,
@@ -878,7 +878,7 @@ export function WebSvgGraph({
   focusedIds,
   activeStepNumber = null,
   animateFlow = true,
-  enableWheelZoom = false,
+  enableTouchGestures = false,
   onTransformChange,
   onShiftNodes,
   onHoverNode,
@@ -888,8 +888,42 @@ export function WebSvgGraph({
   const uid = rawUid.replace(/[^a-zA-Z0-9_-]/g, "");
   const [draggingMode, setDraggingMode] = useState<"idle" | "pan" | "node" | "group">("idle");
   const dragRef = useRef<ActiveDragState | null>(null);
+  const touchPoints = useRef(new Map<number, { x: number; y: number }>());
+  const touchTap = useRef<{ id: string | null; distance: number } | null>(null);
   const transformRef = useRef(transform);
   transformRef.current = transform;
+  const graphSvgRef = useRef<GraphSvgElement | null>(null);
+
+  useEffect(() => {
+    const svg = graphSvgRef.current;
+    if (!svg) return;
+
+    const onWheel = (event: SvgWheelEventLike) => {
+      const { deltaMode, deltaY } = event;
+      if (!deltaY) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const rect = svg.getBoundingClientRect();
+      const unit = deltaMode === 1 ? 16 : deltaMode === 2 ? rect.height : 1;
+      const delta = Math.max(-120, Math.min(120, deltaY * unit));
+      const current = transformRef.current;
+      const next = zoomAroundPoint(
+        current,
+        Math.exp(-delta * 0.0012),
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+      );
+      if (next === current) return;
+      transformRef.current = next;
+      onTransformChange(next);
+    };
+
+    // React's delegated wheel listener is passive. Bind to the canvas to cancel browser scrolling.
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, [onTransformChange]);
 
   if (!isWebPlatform) return null;
 
@@ -911,6 +945,10 @@ export function WebSvgGraph({
     }
   }
 
+  const selectNode = (id: string | null) => {
+    onSelectNode(selectedNodeId === id ? null : id);
+  };
+
   const startDrag = (
     e: SvgPointerEventLike,
     mode: ActiveDragState["mode"],
@@ -919,12 +957,24 @@ export function WebSvgGraph({
   ) => {
     if (e.button !== undefined && e.button !== 0) return;
     e.stopPropagation();
-    e.preventDefault();
-    try {
-      e.currentTarget.setPointerCapture?.(e.pointerId);
-    } catch {
-      // Ignore environments without synthetic pointer capture
+
+    const isTouch = e.pointerType === "touch";
+    if (!isTouch || enableTouchGestures) {
+      try {
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      } catch {
+        // Pointer capture is optional in embedded browsers.
+      }
     }
+
+    if (isTouch) {
+      const points = touchPoints.current;
+      touchTap.current = points.size === 0 ? { id: clickedNodeId, distance: 0 } : null;
+      points.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      return;
+    }
+
+    e.preventDefault();
     dragRef.current = {
       mode,
       nodeIds,
@@ -938,73 +988,95 @@ export function WebSvgGraph({
     setDraggingMode(mode);
   };
 
+  const updateTransform = (next: GraphViewTransform) => {
+    transformRef.current = next;
+    onTransformChange(next);
+  };
+
+  const moveTouch = (e: SvgPointerEventLike) => {
+    const points = touchPoints.current;
+    const previous = points.get(e.pointerId);
+    if (!previous) return;
+
+    const next = { x: e.clientX, y: e.clientY };
+    const dx = next.x - previous.x;
+    const dy = next.y - previous.y;
+    points.set(e.pointerId, next);
+    if (touchTap.current) touchTap.current.distance += Math.hypot(dx, dy);
+    if (!enableTouchGestures) return;
+
+    const current = transformRef.current;
+    if (points.size === 1) {
+      updateTransform({ ...current, x: current.x + dx, y: current.y + dy });
+      return;
+    }
+    if (points.size !== 2) return;
+
+    const other = [...points.entries()].find(([id]) => id !== e.pointerId)?.[1];
+    const rect = graphSvgRef.current?.getBoundingClientRect();
+    if (!other || !rect) return;
+
+    const before = Math.hypot(previous.x - other.x, previous.y - other.y);
+    if (before < 1) return;
+    const factor = Math.hypot(next.x - other.x, next.y - other.y) / before;
+    const zoomed = zoomAroundPoint(
+      current,
+      factor,
+      (previous.x + other.x) / 2 - rect.left,
+      (previous.y + other.y) / 2 - rect.top,
+    );
+    updateTransform({ ...zoomed, x: zoomed.x + dx / 2, y: zoomed.y + dy / 2 });
+  };
+
   const handlePointerMove = (e: SvgPointerEventLike) => {
+    if (e.pointerType === "touch") {
+      moveTouch(e);
+      return;
+    }
+
     const active = dragRef.current;
-    if (!active) return;
-    const dxScreen = e.clientX - active.lastClientX;
-    const dyScreen = e.clientY - active.lastClientY;
-    if (dxScreen === 0 && dyScreen === 0) return;
+    if (!active || active.pointerId !== e.pointerId) return;
+    const dx = e.clientX - active.lastClientX;
+    const dy = e.clientY - active.lastClientY;
+    if (dx === 0 && dy === 0) return;
 
     active.lastClientX = e.clientX;
     active.lastClientY = e.clientY;
-    active.movedDist += Math.hypot(dxScreen, dyScreen);
+    active.movedDist += Math.hypot(dx, dy);
 
     const cur = transformRef.current;
     if (active.mode === "pan") {
-      onTransformChange({
-        ...cur,
-        x: cur.x + dxScreen,
-        y: cur.y + dyScreen,
-      });
+      updateTransform({ ...cur, x: cur.x + dx, y: cur.y + dy });
     } else if (active.nodeIds.length > 0) {
-      const safeScale = Math.max(0.25, cur.scale);
-      onShiftNodes(active.nodeIds, dxScreen / safeScale, dyScreen / safeScale);
+      onShiftNodes(active.nodeIds, dx / cur.scale, dy / cur.scale);
     }
   };
 
-  const finishDrag = (e: SvgPointerEventLike) => {
+  const finishDrag = (e: SvgPointerEventLike, canceled = false) => {
+    if (e.pointerType === "touch") {
+      if (!touchPoints.current.delete(e.pointerId)) return;
+      const tap = touchTap.current;
+      touchTap.current = null;
+      if (!canceled && tap && tap.distance < 5) selectNode(tap.id);
+      e.stopPropagation();
+      return;
+    }
+
     const active = dragRef.current;
-    if (!active) return;
+    if (!active || active.pointerId !== e.pointerId) return;
     dragRef.current = null;
     setDraggingMode("idle");
     try {
       active.capturedTarget?.releasePointerCapture?.(active.pointerId);
     } catch {
-      // Ignore
+      // The browser may already have released the pointer.
     }
 
-    if (active.movedDist < 5) {
-      if (active.mode === "node" && active.clickedNodeId) {
-        onSelectNode(selectedNodeId === active.clickedNodeId ? null : active.clickedNodeId);
-      } else if (active.mode === "pan" && selectedNodeId !== null) {
-        onSelectNode(null);
-      }
+    if (!canceled && active.movedDist < 5) {
+      if (active.mode === "node") selectNode(active.clickedNodeId);
+      else if (active.mode === "pan") selectNode(null);
     }
     e.stopPropagation();
-  };
-
-  const handleWheel = (e: SvgWheelEventLike) => {
-    if (!enableWheelZoom && !e.ctrlKey && !e.metaKey) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    const cur = transformRef.current;
-    const factor = e.deltaY < 0 ? 1.09 : 0.915;
-    const nextScale = Math.max(0.35, Math.min(2.4, Math.round(cur.scale * factor * 100) / 100));
-    if (nextScale === cur.scale) return;
-
-    const rect = e.currentTarget.getBoundingClientRect?.();
-    const anchorX = rect ? e.clientX - rect.left : viewportWidth / 2;
-    const anchorY = rect ? e.clientY - rect.top : viewportHeight / 2;
-
-    const graphX = (anchorX - cur.x) / cur.scale;
-    const graphY = (anchorY - cur.y) / cur.scale;
-
-    onTransformChange({
-      scale: nextScale,
-      x: anchorX - graphX * nextScale,
-      y: anchorY - graphY * nextScale,
-    });
   };
 
   const defs = svgEl(
@@ -1599,12 +1671,13 @@ export function WebSvgGraph({
     "svg",
     {
       width: "100%",
+      ref: graphSvgRef,
       height: viewportHeight,
       style: {
         display: "block",
         width: "100%",
         height: viewportHeight,
-        touchAction: "none",
+        touchAction: enableTouchGestures ? "none" : "pan-y pinch-zoom",
         userSelect: "none",
         WebkitUserSelect: "none",
         cursor: draggingMode === "idle" ? "grab" : "grabbing",
@@ -1612,8 +1685,7 @@ export function WebSvgGraph({
       onPointerDown: (e: SvgPointerEventLike) => startDrag(e, "pan", [], null),
       onPointerMove: handlePointerMove,
       onPointerUp: finishDrag,
-      onPointerCancel: finishDrag,
-      onWheel: handleWheel,
+      onPointerCancel: (e: SvgPointerEventLike) => finishDrag(e, true),
     },
     defs,
     svgEl("rect", {

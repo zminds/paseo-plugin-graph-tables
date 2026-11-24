@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyGraphOffsets, layoutGraph } from "../shared/graph-layout";
+import { computeFittedTransform, zoomAroundPoint } from "../shared/graph-viewport";
 
 describe("layoutGraph", () => {
   it("lays out left-to-right layers without node overlap and generates SmoothStep svgPaths", () => {
@@ -159,5 +160,52 @@ describe("layoutGraph", () => {
     const afterEdge = updated.edges[0]!;
     expect(afterEdge.svgPath).not.toBe(beforeEdge.svgPath);
     expect(afterEdge.x2).toBeCloseTo(afterB.x, 4);
+  });
+});
+
+describe("graph viewport", () => {
+  it("fits a long graph, including routed edges, within a phone-width viewport", () => {
+    const nodes = Array.from({ length: 12 }, (_, index) => ({
+      id: String(index),
+      label: `Stage ${index}`,
+    }));
+    const layout = layoutGraph({
+      direction: "right",
+      nodes,
+      edges: [...nodes.slice(1).map((node, i) => ({ from: nodes[i]!.id, to: node.id })), {
+        from: "11",
+        to: "0",
+        label: "Retry",
+      }],
+    });
+    const width = 320;
+    const height = 300;
+    const { x, y, scale } = computeFittedTransform(layout, width, height, null);
+
+    expect(scale).toBeLessThan(0.35);
+    for (const node of layout.nodes) {
+      expect(x + node.x * scale).toBeGreaterThan(0);
+      expect(x + (node.x + node.width) * scale).toBeLessThan(width);
+    }
+    for (const edge of layout.edges) {
+      for (const point of edge.routePoints) {
+        expect(x + point.x * scale).toBeGreaterThan(0);
+        expect(x + point.x * scale).toBeLessThan(width);
+        expect(y + point.y * scale).toBeGreaterThan(0);
+        expect(y + point.y * scale).toBeLessThan(height);
+      }
+    }
+  });
+
+  it("zooms in and out around the same graph point at phone fit scales", () => {
+    const current = { x: 40, y: 70, scale: 0.08 };
+    const anchor = { x: 115, y: 190 };
+    const next = zoomAroundPoint(current, 1.2, anchor.x, anchor.y);
+
+    expect(next.scale).toBeGreaterThan(current.scale);
+    expect(next.scale).toBeLessThan(0.35);
+    expect((anchor.x - next.x) / next.scale).toBeCloseTo((anchor.x - current.x) / current.scale);
+    expect((anchor.y - next.y) / next.scale).toBeCloseTo((anchor.y - current.y) / current.scale);
+    expect(zoomAroundPoint(next, 1 / 1.2, anchor.x, anchor.y).scale).toBeCloseTo(current.scale);
   });
 });
