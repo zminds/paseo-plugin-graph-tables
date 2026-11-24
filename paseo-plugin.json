@@ -2,7 +2,7 @@
   "id": "agent-graph-tables",
   "name": "Graph & Tables",
   "description": "Interactive tables, charts, KPI stats, timelines, heatmaps, calendars, and auto-layout diagrams for agent replies. Re-implemented from Beluga (https://github.com/beluga-labs/beluga) for Paseo's plugin runtime.",
-  "media": [],
+  "media": ["assets/flow.png", "assets/chart.png"],
   "requirements": {
     "paseo": ">=0.14.0"
   }

@@ -4,6 +4,10 @@ A [Paseo](https://paseo.sh) plugin that brings [Beluga](https://github.com/belug
 
 > **Attribution**: This plugin adapts and re-implements Beluga's (`https://github.com/beluga-labs/beluga`) `view` and `graph` UX workflows inside Paseo's plugin subprocess (`index.server.ts`) and cross-platform React Native client runtime (`index.client.tsx`).
 
+![Request path](assets/flow.png)
+
+![Requests by service](assets/chart.png)
+
 ## Install
 
 ```bash
