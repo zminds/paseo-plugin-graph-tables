@@ -1,7 +1,7 @@
 import type { PluginTimelineData, PluginTimelineItem } from "@getpaseo/plugin";
 import type { PluginTimelineTransformerContribution } from "@getpaseo/plugin/client";
 import { z } from "zod";
-import { parseAssistantMessage } from "../shared/parser";
+import { parseAssistantMessage, type MessageSegment } from "../shared/parser";
 
 export const markdownSegmentSchema = z.object({
   text: z.string(),
@@ -47,83 +47,111 @@ export const toolBadgeSchema = z.object({
 type AssistantTransformer = PluginTimelineTransformerContribution<"assistant_message">["transform"];
 type ToolCallTransformer = PluginTimelineTransformerContribution<"tool_call">["transform"];
 
-export const transformAssistantMessage: AssistantTransformer = ({ item, phase }) => {
-  const parsed = parseAssistantMessage(item.text, phase);
-  if (!parsed.hasSpecialContent) return;
+function toStrictJson(value: unknown): PluginTimelineData {
+  return JSON.parse(JSON.stringify(value)) as PluginTimelineData;
+}
 
-  const lastIndex = parsed.segments.length - 1;
-  const output: PluginTimelineItem[] = parsed.segments.map((seg, idx): PluginTimelineItem => {
-    const id = `seg-${idx}`;
-    if (seg.kind === "markdown") {
-      return {
-        type: "plugin",
-        id,
-        kind: "gt-markdown",
-        version: 1,
-        data: {
-          text: seg.text,
-          phase,
-          isTail: phase === "streaming" && idx === lastIndex,
-        },
-      };
+function collapseDisabledGfmTables(segments: MessageSegment[]): MessageSegment[] | null {
+  const hasNonTableView = segments.some(
+    (seg) => seg.kind !== "markdown" && seg.kind !== "gfm-table",
+  );
+  if (!hasNonTableView) return null;
+
+  const merged: MessageSegment[] = [];
+  for (const seg of segments) {
+    const normalized: MessageSegment =
+      seg.kind === "gfm-table" ? { kind: "markdown", text: seg.rawMarkdown } : seg;
+    const prev = merged[merged.length - 1];
+    if (normalized.kind === "markdown" && prev?.kind === "markdown") {
+      prev.text = `${prev.text}\n${normalized.text}`;
+    } else {
+      merged.push(normalized);
     }
+  }
+  return merged;
+}
 
-    if (seg.kind === "token") {
+export function createAssistantTransformer(
+  getUpgradeMarkdownTables: () => boolean = () => true,
+): AssistantTransformer {
+  return ({ item, phase }) => {
+    const parsed = parseAssistantMessage(item.text, phase);
+    if (!parsed.hasSpecialContent) return;
+
+    const segments = getUpgradeMarkdownTables()
+      ? parsed.segments
+      : collapseDisabledGfmTables(parsed.segments);
+    if (!segments) return;
+
+    const lastIndex = segments.length - 1;
+    const output: PluginTimelineItem[] = segments.map((seg, idx): PluginTimelineItem => {
+      if (seg.kind === "markdown") {
+        return {
+          type: "plugin",
+          kind: "gt-markdown",
+          version: 1,
+          data: toStrictJson({
+            text: seg.text,
+            phase,
+            isTail: phase === "streaming" && idx === lastIndex,
+          }),
+        };
+      }
+
+      if (seg.kind === "token") {
+        return {
+          type: "plugin",
+          kind: "gt-view",
+          version: 1,
+          data: toStrictJson({ mode: "token", viewId: seg.viewId }),
+        };
+      }
+
+      if (seg.kind === "streaming-view") {
+        return {
+          type: "plugin",
+          kind: "gt-view",
+          version: 1,
+          data: toStrictJson({ mode: "streaming", fenceKind: seg.fenceKind }),
+        };
+      }
+
+      if (seg.kind === "inline-view") {
+        return {
+          type: "plugin",
+          kind: "gt-view",
+          version: 1,
+          data: toStrictJson({ mode: "inline", spec: seg.spec }),
+        };
+      }
+
+      if (seg.kind === "gfm-table") {
+        return {
+          type: "plugin",
+          kind: "gt-view",
+          version: 1,
+          data: toStrictJson({
+            mode: "gfm-table",
+            rawMarkdown: seg.rawMarkdown,
+            columns: seg.columns,
+            rows: seg.rows,
+          }),
+        };
+      }
+
       return {
         type: "plugin",
-        id,
         kind: "gt-view",
         version: 1,
-        data: { mode: "token", viewId: seg.viewId },
+        data: toStrictJson({ mode: "invalid", error: seg.error, raw: seg.raw }),
       };
-    }
+    });
 
-    if (seg.kind === "streaming-view") {
-      return {
-        type: "plugin",
-        id,
-        kind: "gt-view",
-        version: 1,
-        data: { mode: "streaming", fenceKind: seg.fenceKind },
-      };
-    }
+    return { items: output };
+  };
+}
 
-    if (seg.kind === "inline-view") {
-      return {
-        type: "plugin",
-        id,
-        kind: "gt-view",
-        version: 1,
-        data: { mode: "inline", spec: seg.spec as PluginTimelineData },
-      };
-    }
-
-    if (seg.kind === "gfm-table") {
-      return {
-        type: "plugin",
-        id,
-        kind: "gt-view",
-        version: 1,
-        data: {
-          mode: "gfm-table",
-          rawMarkdown: seg.rawMarkdown,
-          columns: seg.columns as unknown as PluginTimelineData,
-          rows: seg.rows as unknown as PluginTimelineData,
-        },
-      };
-    }
-
-    return {
-      type: "plugin",
-      id,
-      kind: "gt-view",
-      version: 1,
-      data: { mode: "invalid", error: seg.error, raw: seg.raw },
-    };
-  });
-
-  return { items: output };
-};
+export const transformAssistantMessage: AssistantTransformer = createAssistantTransformer(() => true);
 
 export const transformShowViewToolCall: ToolCallTransformer = ({ item }) => {
   if (item.name !== "show_view" && !item.name.endsWith("__show_view")) {
@@ -169,14 +197,14 @@ export const transformShowViewToolCall: ToolCallTransformer = ({ item }) => {
         type: "plugin",
         kind: "gt-tool-badge",
         version: 1,
-        data: {
+        data: toStrictJson({
           status: item.status,
           ...(viewId ? { viewId } : {}),
           ...(title ? { title } : {}),
           ...(viewType ? { viewType } : {}),
           ...(rowCount !== undefined ? { rowCount } : {}),
           error: errorText,
-        },
+        }),
       },
     ],
   };

@@ -40,5 +40,7 @@ paseo plugin install "$(pwd)"
 npm install
 npm run typecheck
 npm test
-paseo plugin reload graph-tables
+paseo plugin reload agent-graph-tables
 ```
+
+Plugin ID is `agent-graph-tables` so selective `paseo-view` / `paseo-graph` / `show_view` transformers evaluate before `better-paseo` while passing all unmatched messages through.

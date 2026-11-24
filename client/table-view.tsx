@@ -3,7 +3,7 @@ import { openExternalUrl } from "@getpaseo/plugin/client";
 import { Icon, TextInput, copyText, useToast } from "@getpaseo/plugin/client/ui";
 import { useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { formatCellValue, type DataRow } from "../shared/query-engine";
+import { formatCellValue, visualTextUnits, type DataRow } from "../shared/query-engine";
 import type { ColumnSpec } from "../shared/view-schema";
 import { rowsToCsv } from "./format";
 
@@ -26,13 +26,13 @@ export interface TableViewProps {
 
 function estimateColumnWidth(col: ColumnSpec, rows: readonly DataRow[]): number {
   if (col.width) return col.width;
-  const headerLen = (col.label ?? col.key).length + 3;
-  const maxCellLen = rows.slice(0, 30).reduce((max, row) => {
+  const headerUnits = visualTextUnits(col.label ?? col.key) + 3;
+  const maxCellUnits = rows.slice(0, 30).reduce((max, row) => {
     const formatted = formatCellValue(row[col.key], col.type);
-    return Math.max(max, Math.min(36, formatted.length));
+    return Math.max(max, Math.min(44, visualTextUnits(formatted)));
   }, 0);
-  const chars = Math.max(headerLen, maxCellLen, 6);
-  return Math.min(280, Math.max(84, Math.round(chars * 7.8 + 24)));
+  const units = Math.max(headerUnits, maxCellUnits, 6);
+  return Math.min(320, Math.max(88, Math.round(units * 8 + 24)));
 }
 
 function badgeToneColor(raw: string, theme: PluginTheme): string {

@@ -2,6 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { createElement, type ReactElement, type ReactNode } from "react";
 import { Platform } from "react-native";
 import type { GraphLayoutResult } from "../shared/graph-layout";
+import { truncateVisualText, visualTextUnits } from "../shared/query-engine";
 import type { ChartKind } from "../shared/view-schema";
 import { computeNiceScale, formatCompactNumber, type ParsedChartData } from "./format";
 
@@ -657,31 +658,35 @@ export function WebSvgGraph({
           markerEnd: isHighlighted ? "url(#gt-arrow-accent)" : "url(#gt-arrow)",
         }),
         edgeBox.edge.label
-          ? svgEl(
-              "g",
-              null,
-              svgEl("rect", {
-                x: edgeBox.labelX - Math.min(72, edgeBox.edge.label.length * 3.4 + 8),
-                y: edgeBox.labelY - 9,
-                width: Math.min(144, edgeBox.edge.label.length * 6.8 + 16),
-                height: 18,
-                rx: 4,
-                fill: theme.colors.surface0,
-                stroke: theme.colors.border,
-                strokeWidth: 0.8,
-              }),
-              svgEl(
-                "text",
-                {
-                  x: edgeBox.labelX,
-                  y: edgeBox.labelY + 3.5,
-                  textAnchor: "middle",
-                  fill: theme.colors.foregroundMuted,
-                  fontSize: 10,
-                },
-                edgeBox.edge.label.slice(0, 22),
-              ),
-            )
+          ? (() => {
+              const clipped = truncateVisualText(edgeBox.edge.label, 24);
+              const pillW = Math.min(180, Math.max(36, visualTextUnits(clipped) * 6.8 + 16));
+              return svgEl(
+                "g",
+                null,
+                svgEl("rect", {
+                  x: edgeBox.labelX - pillW / 2,
+                  y: edgeBox.labelY - 9,
+                  width: pillW,
+                  height: 18,
+                  rx: 4,
+                  fill: theme.colors.surface0,
+                  stroke: theme.colors.border,
+                  strokeWidth: 0.8,
+                }),
+                svgEl(
+                  "text",
+                  {
+                    x: edgeBox.labelX,
+                    y: edgeBox.labelY + 3.5,
+                    textAnchor: "middle",
+                    fill: theme.colors.foregroundMuted,
+                    fontSize: 10,
+                  },
+                  clipped,
+                ),
+              );
+            })()
           : null,
       ),
     );
@@ -739,6 +744,7 @@ export function WebSvgGraph({
       );
     }
 
+    const maxUnits = Math.max(12, (width - 20) / 7.5);
     inner.push(
       svgEl(
         "text",
@@ -750,7 +756,7 @@ export function WebSvgGraph({
           fontSize: 12.5,
           fontWeight: "700",
         },
-        node.label.slice(0, 28),
+        truncateVisualText(node.label, maxUnits),
       ),
     );
 
@@ -766,7 +772,7 @@ export function WebSvgGraph({
             fill: theme.colors.foregroundMuted,
             fontSize: 10.5,
           },
-          node.sublabel.slice(0, 32),
+          truncateVisualText(node.sublabel, maxUnits * 1.1),
         ),
       );
       lineY += 16;
@@ -802,7 +808,10 @@ export function WebSvgGraph({
             fill: theme.colors.foregroundMuted,
             fontSize: 10,
           },
-          `${keyTag}${field.name}${field.type ? `: ${field.type}` : ""}`.slice(0, 32),
+          truncateVisualText(
+            `${keyTag}${field.name}${field.type ? `: ${field.type}` : ""}`,
+            maxUnits * 1.15,
+          ),
         ),
       );
       lineY += 15;
@@ -820,7 +829,7 @@ export function WebSvgGraph({
             fill: theme.colors.foregroundMuted,
             fontSize: 10,
           },
-          `${mark} ${item.label}`.slice(0, 32),
+          truncateVisualText(`${mark} ${item.label}`, maxUnits * 1.15),
         ),
       );
       lineY += 15;

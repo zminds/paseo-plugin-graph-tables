@@ -18,5 +18,6 @@ Open **Settings -> Graph & Tables** to configure prompt injection, the `show_vie
 ## Compatibility and platform notes
 
 - Requires Paseo `0.14.0` or later for `agent.open.before` prompt/tool hooks and `Markdown` UI rendering.
+- Registered under plugin ID `agent-graph-tables` so its selective view and diagram transformers run before general timeline plugins such as `better-paseo`, while leaving ordinary messages and unrelated tool calls unchanged.
 - ACP providers do not receive `appendSystemPrompt` hooks; load the included `SKILL.md` in those agents when needed.
 - On web and desktop, charts and diagrams render as interactive SVG; on iOS and Android, views render with React Native primitives.

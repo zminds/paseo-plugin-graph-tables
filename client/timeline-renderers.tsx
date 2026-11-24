@@ -29,15 +29,44 @@ export function MarkdownSegmentRenderer({
   return <Markdown>{text}</Markdown>;
 }
 
+function GfmTableRenderer({
+  rawMarkdown,
+  columns,
+  rows,
+  theme,
+  compact,
+}: {
+  rawMarkdown: string;
+  columns: ColumnSpec[];
+  rows: DataRow[];
+  theme: PluginTimelineItemProps["theme"];
+  compact: boolean;
+}) {
+  const settings = useSettings(pluginSettings);
+  const upgradeTables =
+    settings.status === "ready" ? settings.values.upgradeMarkdownTables : true;
+
+  if (!upgradeTables) {
+    return <Markdown>{rawMarkdown}</Markdown>;
+  }
+  return (
+    <ViewCard
+      input={{
+        kind: "gfm-table",
+        columns,
+        rows,
+      }}
+      theme={theme}
+      compact={compact}
+    />
+  );
+}
+
 export function DataViewRenderer({
   item,
   theme,
   layout,
 }: PluginTimelineItemProps<DataViewSegmentData>) {
-  const settings = useSettings(pluginSettings);
-  const upgradeTables =
-    settings.status === "ready" ? settings.values.upgradeMarkdownTables : true;
-
   const data = item.data;
 
   if (data.mode === "streaming") {
@@ -90,16 +119,11 @@ export function DataViewRenderer({
   }
 
   if (data.mode === "gfm-table") {
-    if (!upgradeTables) {
-      return <Markdown>{data.rawMarkdown}</Markdown>;
-    }
     return (
-      <ViewCard
-        input={{
-          kind: "gfm-table",
-          columns: data.columns as unknown as ColumnSpec[],
-          rows: data.rows as DataRow[],
-        }}
+      <GfmTableRenderer
+        rawMarkdown={data.rawMarkdown}
+        columns={data.columns as unknown as ColumnSpec[]}
+        rows={data.rows as DataRow[]}
         theme={theme}
         compact={layout.compact}
       />

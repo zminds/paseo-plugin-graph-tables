@@ -494,3 +494,27 @@ export function substituteTemplate(
     escapeTemplateValue(values[key], mode),
   );
 }
+
+/** Visual width units counting wide CJK/emoji code points as ~1.8 ASCII characters. */
+export function visualTextUnits(text: string): number {
+  let units = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0;
+    units += cp > 0x2e7f ? 1.8 : 1;
+  }
+  return units;
+}
+
+export function truncateVisualText(text: string, maxUnits: number): string {
+  if (visualTextUnits(text) <= maxUnits) return text;
+  let units = 0;
+  let out = "";
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0;
+    const w = cp > 0x2e7f ? 1.8 : 1;
+    if (units + w > Math.max(1, maxUnits - 1.2)) break;
+    out += ch;
+    units += w;
+  }
+  return `${out}…`;
+}

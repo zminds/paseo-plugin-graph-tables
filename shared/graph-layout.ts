@@ -1,3 +1,4 @@
+import { visualTextUnits } from "./query-engine";
 import type { GraphEdge, GraphNode, GraphSpec } from "./view-schema";
 
 export interface PositionedNode {
@@ -43,15 +44,24 @@ export interface GraphLayoutResult {
 }
 
 function estimateNodeSize(node: GraphNode): { width: number; height: number } {
-  const titleLen = node.label.length;
-  const subLen = node.sublabel?.length ?? 0;
-  const maxFieldLen = (node.fields ?? []).reduce(
-    (max, f) => Math.max(max, `${f.name}: ${f.type ?? ""}`.length + 4),
+  const titleUnits = visualTextUnits(node.label);
+  const subUnits = visualTextUnits(node.sublabel ?? "");
+  const maxFieldUnits = (node.fields ?? []).reduce(
+    (max, f) => Math.max(max, visualTextUnits(`${f.name}: ${f.type ?? ""}`) + 4),
     0,
   );
-  const maxItemLen = (node.items ?? []).reduce((max, it) => Math.max(max, it.label.length + 4), 0);
-  const textUnits = Math.max(titleLen, subLen * 0.85, maxFieldLen * 0.78, maxItemLen * 0.82, 10);
-  const width = Math.min(260, Math.max(138, Math.round(textUnits * 7.4 + 38)));
+  const maxItemUnits = (node.items ?? []).reduce(
+    (max, it) => Math.max(max, visualTextUnits(it.label) + 4),
+    0,
+  );
+  const textUnits = Math.max(
+    titleUnits,
+    subUnits * 0.88,
+    maxFieldUnits * 0.82,
+    maxItemUnits * 0.85,
+    10,
+  );
+  const width = Math.min(300, Math.max(138, Math.round(textUnits * 7.6 + 38)));
 
   let height = 48;
   if (node.sublabel) height += 16;

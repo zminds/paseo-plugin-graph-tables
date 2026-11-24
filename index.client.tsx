@@ -1,3 +1,4 @@
+import { settingsRpc } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { GraphTablesSettingsScreen } from "./client/settings-screen";
 import {
@@ -6,19 +7,38 @@ import {
   ToolBadgeRenderer,
 } from "./client/timeline-renderers";
 import {
+  createAssistantTransformer,
   dataViewSegmentSchema,
   markdownSegmentSchema,
   toolBadgeSchema,
-  transformAssistantMessage,
   transformShowViewToolCall,
 } from "./client/timeline-transform";
 import { ViewsWorkspacePanel } from "./client/views-panel";
+import { pluginSettings } from "./shared/settings";
 
 export default function contribute(client: PluginClientContext) {
+  let upgradeMarkdownTables = true;
+  const settingsRead = settingsRpc(pluginSettings.id).read;
+
+  void client
+    .rpc(settingsRead, {})
+    .then((result) => {
+      if (result.status === "ready") {
+        const parsed = pluginSettings.schema.safeParse(result.values);
+        if (parsed.success) {
+          upgradeMarkdownTables = parsed.data.upgradeMarkdownTables;
+        }
+      }
+      return undefined;
+    })
+    .catch(() => {
+      // Keep default true if settings read fails before daemon sync
+    });
+
   client.addTimelineTransformer({
     id: "assistant-views",
     query: { itemType: "assistant_message" },
-    transform: transformAssistantMessage,
+    transform: createAssistantTransformer(() => upgradeMarkdownTables),
   });
 
   client.addTimelineTransformer({
