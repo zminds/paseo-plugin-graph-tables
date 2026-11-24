@@ -1286,28 +1286,29 @@ export function WebSvgGraph({
       ),
     );
 
-    // Top-right STEP N pill or status indicator dot
-    let rightReserved = 14;
+    // Top-right STEP N floating badge (pinned above border so label never truncates) or status dot
+    let rightReserved = 12;
     if (isFocusTarget && activeStepNumber !== null) {
       const badgeText = `STEP ${activeStepNumber}`;
       const pillW = badgeText.length * 5.6 + 12;
-      rightReserved = pillW + 14;
       inner.push(
         svgEl("rect", {
           key: "step-pill-bg",
-          x: x + width - pillW - 8,
-          y: y + 6,
+          x: x + width - pillW - 10,
+          y: y - 8,
           width: pillW,
           height: 15,
           rx: 7.5,
           fill: theme.colors.accent,
+          stroke: theme.colors.surface0,
+          strokeWidth: 1.5,
         }),
         svgEl(
           "text",
           {
             key: "step-pill-txt",
-            x: x + width - pillW / 2 - 8,
-            y: y + 16,
+            x: x + width - pillW / 2 - 10,
+            y: y + 2,
             textAnchor: "middle",
             fill: theme.colors.accentForeground,
             fontSize: 8.5,
@@ -1331,7 +1332,8 @@ export function WebSvgGraph({
 
     // Primary label + sublabel aligned right of the icon badge
     const textX = badgeX + badgeSize + 10;
-    const maxUnits = Math.max(10, (width - (textX - x) - rightReserved) / 7.5);
+    const maxLabelUnits = Math.max(10, (width - (textX - x) - rightReserved) / 7.5);
+    const maxSubUnits = Math.max(10, (width - (textX - x) - 12) / 6.7);
     const labelY = isPill ? (node.sublabel ? y + 23 : y + height / 2 + 4.5) : y + 26;
 
     inner.push(
@@ -1345,7 +1347,7 @@ export function WebSvgGraph({
           fontSize: 12.5,
           fontWeight: "600",
         },
-        truncateVisualText(node.label, maxUnits),
+        truncateVisualText(node.label, maxLabelUnits),
       ),
     );
 
@@ -1361,7 +1363,7 @@ export function WebSvgGraph({
             fill: theme.colors.foregroundMuted,
             fontSize: 10.5,
           },
-          truncateVisualText(node.sublabel, maxUnits * 1.15),
+          truncateVisualText(node.sublabel, maxSubUnits),
         ),
       );
       lineY += 18;

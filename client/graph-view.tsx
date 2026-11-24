@@ -364,10 +364,6 @@ export function GraphView({ spec, theme, compact, expanded = false }: GraphViewP
 
   return (
     <View style={{ gap: 10 }}>
-      {spec.summary ? (
-        <Text style={{ fontSize: 12, color: theme.colors.foregroundMuted }}>{spec.summary}</Text>
-      ) : null}
-
       {isWebPlatform ? (
         <View
           onLayout={(e) => {

@@ -220,6 +220,7 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
         color: theme.colors.foregroundMuted,
         paddingHorizontal: compact ? 10 : 12,
         paddingTop: 8,
+        paddingBottom: 6,
       },
       actions: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
       actionBtn: {
