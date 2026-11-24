@@ -3,6 +3,7 @@
  * (https://github.com/beluga-labs/beluga) for clean vector copy and PNG rasterization.
  */
 import type { GraphLayoutResult, PositionedNode } from "./graph-layout";
+import { glyphShapesToSvg, nodeGlyphShapes, safeGraphImageHref } from "./node-glyphs";
 import { truncateVisualText, visualTextUnits } from "./query-engine";
 import type { ChartKind } from "./view-schema";
 
@@ -560,51 +561,7 @@ function renderGlyphXml(
   color: string,
   label: string,
 ): string {
-  const c = escapeXml(color);
-  const strokeAttr = `fill="none" stroke="${c}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"`;
-  switch (type) {
-    case "database":
-    case "storage":
-      return [
-        `<ellipse cx="${cx}" cy="${cy - 3.5}" rx="5" ry="2.2" ${strokeAttr} />`,
-        `<path d="M ${cx - 5} ${cy - 3.5} v 7 c 0 1.2 2.2 2.2 5 2.2 s 5 -1 5 -2.2 v -7" ${strokeAttr} />`,
-        `<path d="M ${cx - 5} ${cy} c 0 1.2 2.2 2.2 5 2.2 s 5 -1 5 -2.2" ${strokeAttr} />`,
-      ].join("");
-    case "queue":
-      return [
-        `<rect x="${cx - 5}" y="${cy - 4.5}" width="10" height="2.5" rx="1" ${strokeAttr} />`,
-        `<rect x="${cx - 5}" y="${cy - 0.5}" width="10" height="2.5" rx="1" ${strokeAttr} />`,
-        `<rect x="${cx - 5}" y="${cy + 3.5}" width="10" height="2.5" rx="1" ${strokeAttr} />`,
-      ].join("");
-    case "file":
-    case "note":
-      return [
-        `<path d="M ${cx - 4} ${cy - 5.5} h 5.5 l 2.5 2.5 v 8.5 h -8 z" ${strokeAttr} />`,
-        `<path d="M ${cx - 2} ${cy} h 4 M ${cx - 2} ${cy + 2.8} h 3" ${strokeAttr} />`,
-      ].join("");
-    case "function":
-      return `<text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="${c}" font-size="13" font-style="italic" font-weight="700">f</text>`;
-    case "decision":
-      return `<polygon points="${cx},${cy - 5.5} ${cx + 5.5},${cy} ${cx},${cy + 5.5} ${cx - 5.5},${cy}" ${strokeAttr} />`;
-    case "metric":
-      return `<path d="M ${cx - 5.5} ${cy + 2} l 3 -3.5 l 2.5 2 l 4.5 -5" ${strokeAttr} />`;
-    case "client":
-    case "actor":
-    case "person": {
-      const ch = escapeXml((label.trim().charAt(0) || "A").toUpperCase());
-      return `<text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="${c}" font-size="11.5" font-weight="700">${ch}</text>`;
-    }
-    case "external":
-      return [
-        `<circle cx="${cx}" cy="${cy}" r="5" ${strokeAttr} />`,
-        `<path d="M ${cx - 5} ${cy} h 10 M ${cx} ${cy - 5} c 2 2 2 8 0 10" ${strokeAttr} />`,
-      ].join("");
-    default:
-      return [
-        `<rect x="${cx - 5}" y="${cy - 5}" width="10" height="10" rx="2" ${strokeAttr} />`,
-        `<rect x="${cx - 2}" y="${cy - 2}" width="4" height="4" rx="0.8" fill="${c}" />`,
-      ].join("");
-  }
+  return glyphShapesToSvg(nodeGlyphShapes(type, cx, cy, label), escapeXml(color));
 }
 
 export function exportGraphToSvg(input: {
@@ -842,6 +799,13 @@ export function exportGraphToSvg(input: {
     }
 
     let extraY = Math.max(lineY + 2, y + 54);
+    const imageHref = safeGraphImageHref(node.image);
+    if (imageHref) {
+      chunks.push(
+        `<image href="${escapeXml(imageHref)}" x="${x + 14}" y="${extraY}" width="${width - 28}" height="44" preserveAspectRatio="xMidYMid slice" />`,
+      );
+      extraY += 50;
+    }
     for (const field of (node.fields ?? []).slice(0, 6)) {
       const keyTag = field.key ? `${field.key.toUpperCase()} ` : "";
       chunks.push(

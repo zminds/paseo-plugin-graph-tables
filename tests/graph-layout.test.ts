@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { DEMO_VIEW_ITEMS } from "../client/demo-views";
 import { applyGraphOffsets, layoutGraph } from "../shared/graph-layout";
 import { computeFittedTransform, zoomAroundPoint } from "../shared/graph-viewport";
+import { glyphSignature } from "../shared/node-glyphs";
+import { exportGraphToSvg, type SvgThemePalette } from "../shared/svg-export";
+import { graphEdgeKindSchema, graphNodeTypeSchema } from "../shared/view-schema";
 
 describe("layoutGraph", () => {
-  it("lays out left-to-right layers without node overlap and generates SmoothStep svgPaths", () => {
+  it("defaults to left-to-right layers and generates routed edges", () => {
     const res = layoutGraph({
       title: "Architecture",
-      direction: "right",
       nodes: [
         { id: "web", type: "client", label: "Web App", sublabel: "React" },
         { id: "api", type: "service", label: "API", sublabel: "Express" },
@@ -19,6 +21,7 @@ describe("layoutGraph", () => {
       ],
     });
 
+    expect(res.direction).toBe("right");
     expect(res.nodes).toHaveLength(3);
     const web = res.nodes.find((n) => n.node.id === "web")!;
     const api = res.nodes.find((n) => n.node.id === "api")!;
@@ -29,6 +32,47 @@ describe("layoutGraph", () => {
     expect(res.edges[0]?.svgPath.startsWith("M ")).toBe(true);
     expect(res.edges[0]?.labelX).toBeGreaterThan(0);
     expect(res.edges[0]?.labelY).toBeGreaterThan(0);
+  });
+
+  it("separates the arms of a branching graph and keeps disconnected nodes", () => {
+    const layout = layoutGraph({
+      nodes: [
+        { id: "start", label: "Request" },
+        { id: "auth", label: "Authorize" },
+        { id: "data", label: "Load data" },
+        { id: "end", label: "Respond" },
+        { id: "report", label: "Report" },
+        { id: "archive", label: "Archive" },
+        { id: "idle", label: "Idle" },
+      ],
+      edges: [
+        { from: "start", to: "auth" },
+        { from: "start", to: "data" },
+        { from: "auth", to: "end" },
+        { from: "data", to: "end" },
+        { from: "report", to: "archive" },
+      ],
+    });
+    const boxes = new Map(layout.nodes.map((box) => [box.node.id, box]));
+
+    expect(boxes.size).toBe(7);
+    expect(boxes.get("idle")?.node.label).toBe("Idle");
+    expect(layout.edges).toHaveLength(5);
+    for (const { edge, x1, x2 } of layout.edges) {
+      const source = boxes.get(edge.from)!;
+      const target = boxes.get(edge.to)!;
+      expect(x1).toBe(source.x + source.width);
+      expect(x2).toBe(target.x);
+      expect(x1).toBeLessThan(x2);
+    }
+    expect(boxes.get("auth")!.x).toBe(boxes.get("data")!.x);
+    for (const [index, a] of layout.nodes.entries()) {
+      for (const b of layout.nodes.slice(index + 1)) {
+        const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+        const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+        expect(Math.min(overlapX, overlapY)).toBeLessThanOrEqual(0);
+      }
+    }
   });
 
   it("handles cycles with back-edge routing outside intervening nodes", () => {
@@ -54,7 +98,7 @@ describe("layoutGraph", () => {
     expect(insideMiddleY).toBe(false);
   });
 
-  it("separates bidirectional and parallel edges cleanly without overlapping labels", () => {
+  it("separates bidirectional edges cleanly without overlapping labels", () => {
     const res = layoutGraph({
       direction: "down",
       nodes: [
@@ -73,6 +117,40 @@ describe("layoutGraph", () => {
     expect(e2!.isBidirectional).toBe(true);
     expect(e1!.x1).not.toBe(e2!.x2);
     expect(Math.hypot(e1!.labelX - e2!.labelX, e1!.labelY - e2!.labelY)).toBeGreaterThan(15);
+  });
+
+  it.each([
+    ["right", "y"],
+    ["down", "x"],
+  ] as const)("keeps parallel edges and a self-loop distinct when flowing %s", (direction, crossAxis) => {
+    const layout = layoutGraph({
+      direction,
+      nodes: [
+        { id: "worker", label: "Worker" },
+        { id: "queue", label: "Queue" },
+      ],
+      edges: [
+        { from: "worker", to: "queue", label: "Enqueue" },
+        { from: "worker", to: "queue", label: "Schedule" },
+        { from: "worker", to: "worker", label: "Retry" },
+      ],
+    });
+    const worker = layout.nodes.find(({ node }) => node.id === "worker")!;
+    const [first, second, loop] = layout.edges;
+
+    expect(layout.edges).toHaveLength(3);
+    expect(first!.svgPath).not.toBe(second!.svgPath);
+    expect(first!.routePoints[0]![crossAxis]).not.toBe(second!.routePoints[0]![crossAxis]);
+    expect(first!.routePoints.at(-1)![crossAxis]).not.toBe(second!.routePoints.at(-1)![crossAxis]);
+    expect(Math.hypot(first!.labelX - second!.labelX, first!.labelY - second!.labelY)).toBeGreaterThan(15);
+    expect(loop!.isBackEdge).toBe(true);
+    expect(loop!.y1).toBe(worker.y);
+    expect(loop!.y2).toBe(worker.y);
+    expect(loop!.x1).toBeLessThan(worker.x + worker.width);
+    expect(loop!.x2).toBeGreaterThan(worker.x);
+    expect(loop!.x1).toBeGreaterThan(loop!.x2);
+    expect(loop!.labelY).toBeLessThan(worker.y);
+    expect(loop!.svgPath).toContain("Q ");
   });
 
   it("wraps group containers cleanly around members without overlapping outsiders or sibling groups", () => {
@@ -131,20 +209,30 @@ describe("layoutGraph", () => {
     }
   });
 
-  it("fits the grouped demo at a larger scale in a narrow portrait viewport", () => {
+  it("lays the grouped demo out left to right so a desktop viewport uses the width", () => {
     const demo = DEMO_VIEW_ITEMS.find(({ id }) => id === "demo-graph")?.spec;
     if (demo?.type !== "graph") throw new Error("Missing grouped graph demo");
 
     const layout = layoutGraph(demo);
-    const { scale } = computeFittedTransform(layout, 356, 300, null);
+    const phone = computeFittedTransform(layout, 356, 300, null);
+    const desktop = computeFittedTransform(layout, 1100, 480, null);
 
-    expect.soft(layout.width).toBeLessThan(1000);
-    expect(scale).toBeGreaterThan(0.32);
+    expect(demo.direction).toBeUndefined();
+    expect(layout.direction).toBe("right");
+    expect(layout.width).toBeGreaterThan(layout.height);
+    expect(phone.scale).toBeGreaterThan(0.12);
+    expect(desktop.scale).toBeGreaterThan(0.4);
   });
 
-  it.each(["right", "down", "left", "up"] as const)(
-    "keeps nested groups and their cross-group routes intact when flowing %s",
-    (direction) => {
+  it.each([
+    ["default", undefined],
+    ["right", "right"],
+    ["down", "down"],
+    ["left", "left"],
+    ["up", "up"],
+  ] as const)(
+    "lays out nested groups and cross-group routes in the %s direction",
+    (_, direction) => {
       const edges = [
         { from: "start", to: "parse" },
         { from: "parse", to: "render" },
@@ -165,6 +253,22 @@ describe("layoutGraph", () => {
         edges,
       });
       const boxes = new Map([...layout.nodes, ...layout.groups].map((box) => [box.node.id, box]));
+      const expectedDirection = direction ?? "right";
+      const [axis, extent] =
+        expectedDirection === "right" || expectedDirection === "left"
+          ? (["x", "width"] as const)
+          : (["y", "height"] as const);
+
+      expect(layout.direction).toBe(expectedDirection);
+      for (const [source, target] of [
+        ["start", "app"],
+        ["app", "daemon"],
+        ["parse", "render"],
+      ] as const) {
+        const [before, after] =
+          expectedDirection === "left" || expectedDirection === "up" ? [target, source] : [source, target];
+        expect(boxes.get(before)![axis] + boxes.get(before)![extent]).toBeLessThan(boxes.get(after)![axis]);
+      }
 
       const appGroup = layout.groups.find(({ node }) => node.id === "app");
       expect(new Set(appGroup?.memberIds)).toEqual(new Set(["parse", "render"]));
@@ -283,30 +387,42 @@ describe("layoutGraph", () => {
 });
 
 describe("graph viewport", () => {
-  it("fits a long graph, including routed edges, within a phone-width viewport", () => {
-    const nodes = Array.from({ length: 12 }, (_, index) => ({
-      id: String(index),
-      label: `Stage ${index}`,
-    }));
-    const layout = layoutGraph({
-      direction: "right",
-      nodes,
-      edges: [...nodes.slice(1).map((node, i) => ({ from: nodes[i]!.id, to: node.id })), {
-        from: "11",
-        to: "0",
-        label: "Retry",
-      }],
-    });
+  it("fits a 150-node, 300-edge graph and every route within a phone-width viewport", () => {
+    const lanes = Array.from({ length: 10 }, (_, lane) =>
+      Array.from({ length: 15 }, (_, stage) => ({
+        id: `${lane}-${stage}`,
+        label: `Stage ${stage}`,
+      })),
+    );
+    const nodes = lanes.flat();
+    const edges = lanes.flatMap((lane) => [
+      ...lane.slice(1).flatMap(({ id }, index) => [
+        { from: lane[index]!.id, to: id, label: "Run" },
+        { from: lane[index]!.id, to: id, label: "Track" },
+      ]),
+      { from: lane[0]!.id, to: lane[2]!.id, label: "Skip" },
+      { from: lane.at(-1)!.id, to: lane[0]!.id, label: "Retry" },
+    ]);
+    const layout = layoutGraph({ nodes, edges });
     const width = 320;
     const height = 300;
     const { x, y, scale } = computeFittedTransform(layout, width, height, null);
 
+    expect(layout.direction).toBe("right");
+    expect(layout.nodes).toHaveLength(150);
+    expect(layout.edges).toHaveLength(300);
+    expect(layout.edges.map(({ edge }) => edge)).toMatchObject(edges);
+    expect(layout.edges.filter(({ isBackEdge }) => isBackEdge)).toHaveLength(10);
+    expect(scale).toBeGreaterThan(0);
     expect(scale).toBeLessThan(0.35);
     for (const node of layout.nodes) {
       expect(x + node.x * scale).toBeGreaterThan(0);
       expect(x + (node.x + node.width) * scale).toBeLessThan(width);
+      expect(y + node.y * scale).toBeGreaterThan(0);
+      expect(y + (node.y + node.height) * scale).toBeLessThan(height);
     }
     for (const edge of layout.edges) {
+      expect(edge.routePoints.length).toBeGreaterThanOrEqual(2);
       for (const point of edge.routePoints) {
         expect(x + point.x * scale).toBeGreaterThan(0);
         expect(x + point.x * scale).toBeLessThan(width);
@@ -326,5 +442,80 @@ describe("graph viewport", () => {
     expect((anchor.x - next.x) / next.scale).toBeCloseTo((anchor.x - current.x) / current.scale);
     expect((anchor.y - next.y) / next.scale).toBeCloseTo((anchor.y - current.y) / current.scale);
     expect(zoomAroundPoint(next, 1 / 1.2, anchor.x, anchor.y).scale).toBeCloseTo(current.scale);
+  });
+});
+
+const EXPORT_COLORS: SvgThemePalette = {
+  surface0: "#ffffff",
+  surface1: "#f8fafc",
+  surface2: "#f1f5f9",
+  border: "#cbd5e1",
+  foreground: "#0f172a",
+  foregroundMuted: "#64748b",
+  accent: "#2563eb",
+  accentForeground: "#ffffff",
+  statusSuccess: "#16a34a",
+  statusWarning: "#d97706",
+  statusDanger: "#dc2626",
+};
+
+describe("every graph node and edge", () => {
+  const spec = DEMO_VIEW_ITEMS.find((item) => item.id === "demo-graph-types")?.spec;
+  if (!spec || spec.type !== "graph") throw new Error("missing all-types graph demo");
+
+  it("gives every node type its own glyph", () => {
+    const seen = new Map<string, string>();
+    for (const type of graphNodeTypeSchema.options) {
+      const signature = glyphSignature(type);
+      expect(signature.length).toBeGreaterThan(0);
+      expect(seen.get(signature), `${type} duplicates ${seen.get(signature)}`).toBeUndefined();
+      seen.set(signature, type);
+    }
+  });
+
+  it("covers every node type and edge kind in a left-to-right drawing", () => {
+    expect(spec.direction).toBeUndefined();
+    const layout = layoutGraph(spec);
+    const svg = exportGraphToSvg({ layout, title: spec.title, colors: EXPORT_COLORS }).svg;
+    const boxes = new Map(layout.nodes.map((box) => [box.node.id, box]));
+
+    expect(layout.direction).toBe("right");
+    expect(layout.width).toBeGreaterThan(layout.height);
+    expect(new Set(layout.nodes.map((box) => box.node.type))).toEqual(
+      new Set(graphNodeTypeSchema.options.filter((type) => type !== "group")),
+    );
+    expect(new Set(layout.groups.map((group) => group.node.type))).toEqual(new Set(["group"]));
+    expect(new Set(layout.edges.map((edge) => edge.edge.kind))).toEqual(
+      new Set(graphEdgeKindSchema.options),
+    );
+    expect(svg).toContain("&lt;/&gt;");
+    expect(svg).toContain("c 0 1.2 2.2 2.2 5 2.2");
+    expect(svg).toContain("h 5.5 l 2.5 2.5");
+    expect(svg).toContain("PK id: uuid");
+    expect(svg).toContain("schema.sql");
+    expect(svg).toContain("87%");
+    expect(svg).toContain("✓ Tests");
+    expect(svg).toContain("<image ");
+    expect(svg).toContain("data:image/png;base64,");
+    expect(svg).toContain('stroke-dasharray="5 4"');
+    expect(svg).toContain(EXPORT_COLORS.statusDanger);
+
+    for (const edge of layout.edges) {
+      const source = boxes.get(edge.edge.from);
+      const target = boxes.get(edge.edge.to);
+      expect(source, edge.edge.from).toBeDefined();
+      expect(target, edge.edge.to).toBeDefined();
+      expect(edge.svgPath.startsWith("M ")).toBe(true);
+      expect(edge.routePoints.length).toBeGreaterThanOrEqual(2);
+    }
+    for (const [index, a] of layout.nodes.entries()) {
+      for (const b of layout.nodes.slice(index + 1)) {
+        const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+        const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+        expect(Math.min(overlapX, overlapY)).toBeLessThanOrEqual(0);
+      }
+    }
+    expect(boxes.get("client")!.x).toBeLessThan(boxes.get("api")!.x);
+    expect(boxes.get("api")!.x).toBeLessThan(boxes.get("db")!.x);
   });
 });

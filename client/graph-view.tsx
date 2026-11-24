@@ -77,8 +77,10 @@ export function GraphView({
   }, [activeStep]);
 
   const narrowCanvas = compact || (viewportSize.width > 0 && viewportSize.width < 480);
-  const direction = directionOverride ?? spec.direction ?? (narrowCanvas ? "down" : "right");
-  const effectiveSpec = useMemo<GraphLayoutInput>(() => ({ ...spec, direction }), [spec, direction]);
+  const effectiveSpec = useMemo<GraphLayoutInput>(
+    () => directionOverride === undefined ? spec : { ...spec, direction: directionOverride },
+    [spec, directionOverride],
+  );
 
   const baseLayout = useMemo(() => layoutGraph(effectiveSpec), [effectiveSpec]);
   const layout = useMemo(() => applyGraphOffsets(baseLayout, nodeOffsets), [baseLayout, nodeOffsets]);
@@ -148,8 +150,7 @@ export function GraphView({
   }, [layout.nodes, selectedNodeId]);
 
   const hasCustomOffsets = Object.keys(nodeOffsets).length > 0;
-  const effectiveDirection = effectiveSpec.direction ?? "right";
-  const isVerticalFlow = effectiveDirection === "down" || effectiveDirection === "up";
+  const isVerticalFlow = baseLayout.direction === "down" || baseLayout.direction === "up";
 
   const zoomBy = (factor: number) => {
     const width = viewportSize.width || 600;

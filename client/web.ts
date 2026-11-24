@@ -7,6 +7,7 @@ import { createElement, type ReactElement, type ReactNode, useEffect, useId, use
 import { Platform } from "react-native";
 import type { GraphLayoutResult, PositionedNode } from "../shared/graph-layout";
 import { type GraphViewTransform, zoomAroundPoint } from "../shared/graph-viewport";
+import { nodeGlyphShapes, safeGraphImageHref, type GlyphShape } from "../shared/node-glyphs";
 import { truncateVisualText, visualTextUnits } from "../shared/query-engine";
 import {
   arcSlicePath,
@@ -764,6 +765,38 @@ function typeAccentColor(type: PositionedNode["node"]["type"], theme: PluginThem
   }
 }
 
+function glyphShapeProps(shape: GlyphShape, color: string, key: number): Record<string, unknown> {
+  const filled = shape.fill === "color";
+  const props: Record<string, unknown> = {
+    key,
+    fill: filled ? color : "none",
+    stroke: filled || shape.tag === "text" ? "none" : color,
+  };
+  if (shape.tag !== "text") {
+    props.strokeWidth = 1.5;
+    props.strokeLinecap = "round";
+    props.strokeLinejoin = "round";
+  }
+  if (shape.d !== undefined) props.d = shape.d;
+  if (shape.x !== undefined) props.x = shape.x;
+  if (shape.y !== undefined) props.y = shape.y;
+  if (shape.width !== undefined) props.width = shape.width;
+  if (shape.height !== undefined) props.height = shape.height;
+  if (shape.rx !== undefined) props.rx = shape.rx;
+  if (shape.ry !== undefined) props.ry = shape.ry;
+  if (shape.cx !== undefined) props.cx = shape.cx;
+  if (shape.cy !== undefined) props.cy = shape.cy;
+  if (shape.r !== undefined) props.r = shape.r;
+  if (shape.points !== undefined) props.points = shape.points;
+  if (shape.tag === "text") {
+    props.textAnchor = "middle";
+    props.fontSize = shape.fontSize ?? 11;
+    props.fontWeight = "700";
+    if (shape.italic) props.fontStyle = "italic";
+  }
+  return props;
+}
+
 function renderNodeBadgeGlyph(
   type: PositionedNode["node"]["type"],
   cx: number,
@@ -771,101 +804,13 @@ function renderNodeBadgeGlyph(
   color: string,
   label: string,
 ): ReactElement {
-  const strokeProps = {
-    fill: "none",
-    stroke: color,
-    strokeWidth: 1.5,
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-  };
-
-  switch (type) {
-    case "database":
-    case "storage":
-      return svgEl(
-        "g",
-        { key: "glyph" },
-        svgEl("ellipse", { cx, cy: cy - 3.5, rx: 5, ry: 2.2, ...strokeProps }),
-        svgEl("path", { d: `M ${cx - 5} ${cy - 3.5} v 7 c 0 1.2 2.2 2.2 5 2.2 s 5 -1 5 -2.2 v -7`, ...strokeProps }),
-        svgEl("path", { d: `M ${cx - 5} ${cy} c 0 1.2 2.2 2.2 5 2.2 s 5 -1 5 -2.2`, ...strokeProps }),
-      );
-    case "queue":
-      return svgEl(
-        "g",
-        { key: "glyph" },
-        svgEl("rect", { x: cx - 5, y: cy - 4.5, width: 10, height: 2.5, rx: 1, ...strokeProps }),
-        svgEl("rect", { x: cx - 5, y: cy - 0.5, width: 10, height: 2.5, rx: 1, ...strokeProps }),
-        svgEl("rect", { x: cx - 5, y: cy + 3.5, width: 10, height: 2.5, rx: 1, ...strokeProps }),
-      );
-    case "file":
-    case "note":
-      return svgEl(
-        "g",
-        { key: "glyph" },
-        svgEl("path", {
-          d: `M ${cx - 4} ${cy - 5.5} h 5.5 l 2.5 2.5 v 8.5 h -8 z`,
-          ...strokeProps,
-        }),
-        svgEl("path", { d: `M ${cx - 2} ${cy} h 4 M ${cx - 2} ${cy + 2.8} h 3`, ...strokeProps }),
-      );
-    case "function":
-      return svgEl(
-        "text",
-        {
-          key: "glyph",
-          x: cx,
-          y: cy + 4,
-          textAnchor: "middle",
-          fill: color,
-          fontSize: 13,
-          fontStyle: "italic",
-          fontWeight: "700",
-        },
-        "f",
-      );
-    case "decision":
-      return svgEl("polygon", {
-        key: "glyph",
-        points: `${cx},${cy - 5.5} ${cx + 5.5},${cy} ${cx},${cy + 5.5} ${cx - 5.5},${cy}`,
-        ...strokeProps,
-      });
-    case "metric":
-      return svgEl("path", {
-        key: "glyph",
-        d: `M ${cx - 5.5} ${cy + 2} l 3 -3.5 l 2.5 2 l 4.5 -5`,
-        ...strokeProps,
-      });
-    case "client":
-    case "actor":
-    case "person":
-      return svgEl(
-        "text",
-        {
-          key: "glyph",
-          x: cx,
-          y: cy + 4,
-          textAnchor: "middle",
-          fill: color,
-          fontSize: 11.5,
-          fontWeight: "700",
-        },
-        (label.trim().charAt(0) || "A").toUpperCase(),
-      );
-    case "external":
-      return svgEl(
-        "g",
-        { key: "glyph" },
-        svgEl("circle", { cx, cy, r: 5, ...strokeProps }),
-        svgEl("path", { d: `M ${cx - 5} ${cy} h 10 M ${cx} ${cy - 5} c 2 2 2 8 0 10`, ...strokeProps }),
-      );
-    default:
-      return svgEl(
-        "g",
-        { key: "glyph" },
-        svgEl("rect", { x: cx - 5, y: cy - 5, width: 10, height: 10, rx: 2, ...strokeProps }),
-        svgEl("rect", { x: cx - 2, y: cy - 2, width: 4, height: 4, rx: 0.8, fill: color }),
-      );
-  }
+  return svgEl(
+    "g",
+    { key: "glyph" },
+    ...nodeGlyphShapes(type, cx, cy, label).map((shape, index) =>
+      svgEl(shape.tag, glyphShapeProps(shape, color, index), shape.text),
+    ),
+  );
 }
 
 export function WebSvgGraph({
@@ -1614,6 +1559,21 @@ export function WebSvgGraph({
     }
 
     let extraY = Math.max(lineY + 2, y + 54);
+    const imageHref = safeGraphImageHref(node.image);
+    if (imageHref) {
+      inner.push(
+        svgEl("image", {
+          key: "photo",
+          href: imageHref,
+          x: x + 14,
+          y: extraY,
+          width: width - 28,
+          height: 44,
+          preserveAspectRatio: "xMidYMid slice",
+        }),
+      );
+      extraY += 50;
+    }
     for (const [fIdx, field] of (node.fields ?? []).slice(0, 6).entries()) {
       const keyTag = field.key ? `${field.key.toUpperCase()} ` : "";
       inner.push(

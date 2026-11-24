@@ -2,6 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { memo, useMemo, useRef } from "react";
 import {
+  Image,
   PanResponder,
   Pressable,
   Text,
@@ -11,6 +12,7 @@ import {
 } from "react-native";
 import type { GraphLayoutResult, PositionedEdge } from "../shared/graph-layout";
 import { type GraphViewTransform, zoomAroundPoint } from "../shared/graph-viewport";
+import { nodeGlyphSvg, safeGraphImageHref } from "../shared/node-glyphs";
 import { visualTextUnits } from "../shared/query-engine";
 
 interface GraphContentProps {
@@ -199,11 +201,17 @@ const NativeGraphContent = memo(function NativeGraphContent({
               borderColor: selected || focused || node.emphasis ? colors.accent : colors.border,
               backgroundColor: selected || focused ? colors.surface2 : colors.surface0,
               opacity: focus && !focused && !selected ? 0.4 : 1,
-              justifyContent: "center",
+              justifyContent: "flex-start",
               paddingHorizontal: 12,
+              paddingVertical: 8,
             }}
           >
             <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+              <Icon
+                icon={{ svg: nodeGlyphSvg(node.type, colors.accent, node.label) }}
+                size={16}
+                color={colors.accent}
+              />
               <Text
                 numberOfLines={1}
                 allowFontScaling={false}
@@ -240,6 +248,33 @@ const NativeGraphContent = memo(function NativeGraphContent({
                 {String(node.value)}
               </Text>
             ) : null}
+            {safeGraphImageHref(node.image) ? (
+              <Image
+                source={{ uri: safeGraphImageHref(node.image)! }}
+                resizeMode="cover"
+                style={{ height: 40, marginTop: 6, borderRadius: 6, width: "100%" }}
+              />
+            ) : null}
+            {(node.fields ?? []).slice(0, 6).map((field) => (
+              <Text
+                key={`${field.key ?? ""}-${field.name}`}
+                numberOfLines={1}
+                allowFontScaling={false}
+                style={{ color: colors.foregroundMuted, fontSize: 11 }}
+              >
+                {`${field.key ? `${field.key.toUpperCase()} ` : ""}${field.name}${field.type ? `: ${field.type}` : ""}`}
+              </Text>
+            ))}
+            {(node.items ?? []).slice(0, 6).map((item) => (
+              <Text
+                key={item.label}
+                numberOfLines={1}
+                allowFontScaling={false}
+                style={{ color: colors.foregroundMuted, fontSize: 11 }}
+              >
+                {`${item.status === "done" ? "✓" : item.status === "failed" ? "✕" : "•"} ${item.label}`}
+              </Text>
+            ))}
           </Pressable>
         );
       })}

@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseChartData } from "../client/format";
 import { createExportViewHandler } from "../server/export";
 import { ViewStore } from "../server/view-store";
@@ -17,6 +17,7 @@ import {
 import { applyGraphOffsets, layoutGraph } from "../shared/graph-layout";
 import { inferColumns } from "../shared/query-engine";
 import { DEFAULT_SETTINGS } from "../shared/settings";
+import type { ChartKind } from "../shared/view-schema";
 import {
   exportChartToSvg,
   exportGraphToSvg,
@@ -38,6 +39,41 @@ const PALETTE: SvgThemePalette = {
   statusDanger: "#dc2626",
 };
 
+const CHART_DATA: ChartExportData = {
+  xKey: "q",
+  xLabels: ["Q1", "Q2", "Q3"],
+  xNumbers: [1, 2, 3],
+  series: [
+    { key: "a", label: "Alpha", color: "#2563eb", values: [10, 25, 18] },
+    { key: "b", label: "Beta", color: "#16a34a", values: [15, 10, 22] },
+  ],
+  pieSlices: [
+    { label: "Alpha", value: 53, color: "#2563eb", rowIndex: 0 },
+    { label: "Beta", value: 47, color: "#16a34a", rowIndex: 1 },
+  ],
+  scatterPoints: [
+    { seriesKey: "Alpha", seriesLabel: "Alpha", color: "#2563eb", x: 1, y: 10, xLabel: "Q1", rowIndex: 0 },
+    { seriesKey: "Alpha", seriesLabel: "Alpha", color: "#2563eb", x: 1, y: 24, xLabel: "Q1", rowIndex: 1 },
+    { seriesKey: "Beta", seriesLabel: "Beta", color: "#16a34a", x: 2, y: 15, xLabel: "Q2", rowIndex: 2 },
+  ],
+};
+
+const CHART_VARIANTS: Array<{
+  kind: ChartKind;
+  curve?: "smooth" | "linear" | "step";
+  stacked?: boolean;
+}> = [
+  { kind: "bar", stacked: false },
+  { kind: "bar", stacked: true },
+  { kind: "line", curve: "smooth" },
+  { kind: "line", curve: "step" },
+  { kind: "area", stacked: false },
+  { kind: "area", stacked: true, curve: "smooth" },
+  { kind: "pie" },
+  { kind: "donut" },
+  { kind: "scatter" },
+];
+
 const tempDirs: string[] = [];
 
 async function makeTempDir() {
@@ -46,7 +82,26 @@ async function makeTempDir() {
   return dir;
 }
 
+function createTestExportHandler(outDir: string) {
+  return createExportViewHandler(new ViewStore({ storeDir: outDir }), () => ({
+    ...DEFAULT_SETTINGS,
+    exportDirectory: outDir,
+  }));
+}
+
+function makeGraphExport() {
+  const layout = layoutGraph({
+    nodes: [
+      { id: "a", label: "Start" },
+      { id: "b", label: "Finish" },
+    ],
+    edges: [{ from: "a", to: "b", label: "next" }],
+  });
+  return exportGraphToSvg({ layout, title: "Pipeline", colors: PALETTE });
+}
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
@@ -120,47 +175,12 @@ describe("markdown, csv, svg, and png export", () => {
   });
 
   it("exports valid standalone SVGs for all 6 chart kinds including stacked area and grouped scatter", () => {
-    const data: ChartExportData = {
-      xKey: "q",
-      xLabels: ["Q1", "Q2", "Q3"],
-      xNumbers: [1, 2, 3],
-      series: [
-        { key: "a", label: "Alpha", color: "#2563eb", values: [10, 25, 18] },
-        { key: "b", label: "Beta", color: "#16a34a", values: [15, 10, 22] },
-      ],
-      pieSlices: [
-        { label: "Alpha", value: 53, color: "#2563eb", rowIndex: 0 },
-        { label: "Beta", value: 47, color: "#16a34a", rowIndex: 1 },
-      ],
-      scatterPoints: [
-        { seriesKey: "Alpha", seriesLabel: "Alpha", color: "#2563eb", x: 1, y: 10, xLabel: "Q1", rowIndex: 0 },
-        { seriesKey: "Alpha", seriesLabel: "Alpha", color: "#2563eb", x: 1, y: 24, xLabel: "Q1", rowIndex: 1 },
-        { seriesKey: "Beta", seriesLabel: "Beta", color: "#16a34a", x: 2, y: 15, xLabel: "Q2", rowIndex: 2 },
-      ],
-    };
-
-    const variants: Array<{
-      kind: "bar" | "line" | "area" | "pie" | "donut" | "scatter";
-      curve?: "smooth" | "linear" | "step";
-      stacked?: boolean;
-    }> = [
-      { kind: "bar", stacked: false },
-      { kind: "bar", stacked: true },
-      { kind: "line", curve: "smooth" },
-      { kind: "line", curve: "step" },
-      { kind: "area", stacked: false },
-      { kind: "area", stacked: true, curve: "smooth" },
-      { kind: "pie" },
-      { kind: "donut" },
-      { kind: "scatter" },
-    ];
-
-    for (const v of variants) {
+    for (const v of CHART_VARIANTS) {
       const { svg, width, height } = exportChartToSvg({
         kind: v.kind,
         title: `Chart ${v.kind}`,
         summary: "Test summary",
-        data,
+        data: CHART_DATA,
         curve: v.curve,
         stacked: v.stacked,
         colors: PALETTE,
@@ -175,7 +195,7 @@ describe("markdown, csv, svg, and png export", () => {
     // Verify donut has Total label & pie has percentage legend
     const donutSvg = exportChartToSvg({
       kind: "donut",
-      data,
+      data: CHART_DATA,
       colors: PALETTE,
     }).svg;
     expect(donutSvg).toContain("Total");
@@ -212,79 +232,99 @@ describe("markdown, csv, svg, and png export", () => {
     expect(svg).not.toContain("<animate");
   });
 
-  it("writes md, svg, client PNG, and daemon-rasterized PNG via views.export handler", async () => {
+  it("writes every table export format without changing the payload", async () => {
     const outDir = await makeTempDir();
-    const store = new ViewStore({ storeDir: outDir });
-    const handler = createExportViewHandler(store, () => ({
-      ...DEFAULT_SETTINGS,
-      exportDirectory: outDir,
-    }));
+    const handler = createTestExportHandler(outDir);
+    const columns = [{ key: "service" }, { key: "count" }];
+    const rows = [{ service: "架构, API", count: 10 }];
+    const formats = [
+      { format: "markdown", ext: "md", mime: "text/markdown", content: rowsToMarkdownTable(columns, rows) },
+      { format: "csv", ext: "csv", mime: "text/csv", content: rowsToCsv(columns, rows) },
+      { format: "tsv", ext: "tsv", mime: "text/tab-separated-values", content: rowsToTsv(columns, rows) },
+      { format: "json", ext: "json", mime: "application/json", content: rowsToJson(columns, rows) },
+      { format: "sql", ext: "sql", mime: "application/sql", content: rowsToSqlInserts(columns, rows, "metrics") },
+    ] as const;
 
-    const mdRes = await handler({
-      format: "markdown",
-      title: "Metrics Table",
-      content: "| a | b |\n| :--- | ---: |\n| x | 1 |\n",
-    });
-    expect(mdRes.ok).toBe(true);
-    expect(mdRes.filePath?.endsWith(".md")).toBe(true);
-    expect(await readFile(mdRes.filePath!, "utf8")).toContain("| x | 1 |");
-
-    const sqlRes = await handler({
-      format: "sql",
-      title: "Metrics SQL",
-      content: 'INSERT INTO "t" ("a") VALUES (1);',
-    });
-    expect(sqlRes.ok).toBe(true);
-    expect(sqlRes.filePath?.endsWith(".sql")).toBe(true);
-
-    const tsvRes = await handler({
-      format: "tsv",
-      title: "Metrics TSV",
-      content: "a\tb\n1\t2\n",
-    });
-    expect(tsvRes.ok).toBe(true);
-    expect(tsvRes.filePath?.endsWith(".tsv")).toBe(true);
-
-    const graph = layoutGraph({
-      nodes: [
-        { id: "a", label: "Start" },
-        { id: "b", label: "Finish" },
-      ],
-      edges: [{ from: "a", to: "b", label: "next" }],
-    });
-    const { svg, width, height } = exportGraphToSvg({
-      layout: graph,
-      title: "Pipeline",
-      colors: PALETTE,
-    });
-
-    const svgRes = await handler({ format: "svg", title: "Pipeline", svg });
-    expect(svgRes.ok).toBe(true);
-    expect(svgRes.filePath?.endsWith(".svg")).toBe(true);
-
-    // Client-supplied PNG base64 write
-    const fakePng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]);
-    const clientPngRes = await handler({
-      format: "png",
-      title: "Client Shot",
-      pngBase64: `data:image/png;base64,${fakePng.toString("base64")}`,
-    });
-    expect(clientPngRes.ok).toBe(true);
-    expect((await readFile(clientPngRes.filePath!)).subarray(0, 8)).toEqual(fakePng.subarray(0, 8));
-
-    // Daemon-side SVG -> PNG fallback (uses qlmanage on macOS)
-    if (process.platform === "darwin") {
-      const daemonPngRes = await handler({
-        format: "png",
-        title: "Daemon Raster",
-        svg,
-        width,
-        height,
+    for (const { format, ext, mime, content } of formats) {
+      const result = await handler({ format, title: "Metrics Table", content });
+      expect(result, result.error ?? undefined).toMatchObject({
+        ok: true,
+        bytes: Buffer.byteLength(content),
+        mimeType: `${mime}; charset=utf-8`,
       });
-      expect(daemonPngRes.ok).toBe(true);
-      expect(daemonPngRes.bytes).toBeGreaterThan(100);
-      const header = (await readFile(daemonPngRes.filePath!)).subarray(0, 8);
-      expect(header).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      expect(result.filePath).toMatch(new RegExp(`\\.${ext}$`));
+      expect(await readFile(result.filePath!, "utf8")).toBe(content);
     }
   });
+
+  it("writes the exact SVG and complete PNG supplied by a client", async () => {
+    const outDir = await makeTempDir();
+    const handler = createTestExportHandler(outDir);
+    const { svg } = makeGraphExport();
+    const svgResult = await handler({ format: "svg", title: "Pipeline", svg });
+    expect(svgResult, svgResult.error ?? undefined).toMatchObject({
+      ok: true,
+      bytes: Buffer.byteLength(svg),
+      mimeType: "image/svg+xml; charset=utf-8",
+    });
+    expect(svgResult.filePath?.endsWith(".svg")).toBe(true);
+    expect(await readFile(svgResult.filePath!, "utf8")).toBe(svg);
+
+    vi.stubEnv("PATH", outDir);
+    const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGM0Tpv5n4GBgYEJRIAwACDiAjV70IMnAAAAAElFTkSuQmCC";
+    const png = Buffer.from(pngBase64, "base64");
+    const pngResult = await handler({
+      format: "png",
+      title: "Client Shot",
+      svg,
+      pngBase64: `data:image/png;base64,${pngBase64}`,
+    });
+    expect(pngResult, pngResult.error ?? undefined).toMatchObject({
+      ok: true,
+      bytes: png.length,
+      mimeType: "image/png",
+    });
+    expect(pngResult.filePath?.endsWith(".png")).toBe(true);
+    expect(await readFile(pngResult.filePath!)).toEqual(png);
+  });
+
+  it("returns an actionable error when no daemon PNG rasterizer is available", async () => {
+    const outDir = await makeTempDir();
+    vi.stubEnv("PATH", outDir);
+    const handler = createTestExportHandler(outDir);
+    const result = await handler({ format: "png", title: "Pipeline", ...makeGraphExport() });
+
+    expect(result).toMatchObject({ ok: false, filePath: null, bytes: 0, mimeType: "image/png" });
+    expect(result.error).toContain("no rasterizer available");
+    expect(await readdir(outDir)).toEqual([]);
+  });
+
+  // Run with PASEO_TEST_DAEMON_RASTERIZER=1 and a working rsvg-convert, magick, or macOS qlmanage on PATH.
+  it.skipIf(process.env.PASEO_TEST_DAEMON_RASTERIZER !== "1")(
+    "rasterizes graph and all 6 chart kinds without a browser",
+    async () => {
+      const outDir = await makeTempDir();
+      const handler = createTestExportHandler(outDir);
+      const charts = CHART_VARIANTS.map(({ kind, curve, stacked }, index) => ({
+        title: `${kind} ${index + 1}`,
+        ...exportChartToSvg({ kind, curve, stacked, data: CHART_DATA, colors: PALETTE }),
+      }));
+      const exports = [{ title: "Pipeline", ...makeGraphExport() }, ...charts];
+
+      for (const { title, svg, width, height } of exports) {
+        const result = await handler({ format: "png", title, svg, width, height });
+        expect(result, `${title}: ${result.error ?? "unknown error"}`).toMatchObject({
+          ok: true,
+          mimeType: "image/png",
+        });
+        const png = await readFile(result.filePath!);
+        expect(result.bytes).toBe(png.length);
+        expect(png.length).toBeGreaterThan(100);
+        expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+        expect(png.readUInt32BE(16)).toBeGreaterThan(100);
+        expect(png.readUInt32BE(20)).toBeGreaterThan(100);
+      }
+    },
+    30_000,
+  );
 });

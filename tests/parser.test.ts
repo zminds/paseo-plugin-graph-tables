@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { DEMO_VIEW_ITEMS } from "../client/demo-views";
 import { parseAssistantMessage } from "../shared/parser";
+import { chartKindSchema, normalizeViewInput, viewTypeSchema } from "../shared/view-schema";
 
 describe("parseAssistantMessage", () => {
   it("returns hasSpecialContent=false for plain markdown", () => {
@@ -91,4 +93,13 @@ describe("parseAssistantMessage", () => {
       ]);
     }
   });
+});
+
+it("has valid gallery examples for every supported view and chart kind", () => {
+  for (const demo of DEMO_VIEW_ITEMS) {
+    expect(normalizeViewInput(demo.spec).ok, demo.id).toBe(true);
+  }
+  expect(new Set(DEMO_VIEW_ITEMS.map(({ spec }) => spec.type))).toEqual(new Set(viewTypeSchema.options));
+  expect(new Set(DEMO_VIEW_ITEMS.filter(({ spec }) => spec.type === "chart").map(({ spec }) => spec.chart)))
+    .toEqual(new Set(chartKindSchema.options));
 });

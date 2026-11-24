@@ -87,14 +87,13 @@ Every interactive view includes built-in export controls in the client UI (savin
 - `calendar`: `{"type": "calendar", "data": [{"date": "2026-11-01", "value": 3}]}`
 
 ### Interactive Graph (`paseo-graph` / `beluga-graph`)
-Strict JSON (no comments, no trailing commas, no manual coordinates). Use 4 to 25 nodes, concise 2-4 word labels, `"type": "group"` container boxes (`"group": "<id>"` on child nodes) whenever components belong to distinct layers, processes, or hosts, and `steps` when walking through a flow:
+Strict JSON (no comments, no trailing commas, no manual coordinates). Omit the direction for the default left-to-right layout. Use 4 to 25 nodes, concise 2-4 word labels, `"type": "group"` container boxes (`"group": "<id>"` on child nodes) whenever components belong to distinct layers, processes, or hosts, and `steps` when walking through a flow:
 
 ````markdown
 ```paseo-graph
 {
   "title": "How login works",
   "summary": "Session flow across web, API, and Postgres",
-  "direction": "down",
   "nodes": [
     { "id": "web", "type": "client", "label": "Web app", "sublabel": "React" },
     { "id": "backend", "type": "group", "label": "Backend" },
