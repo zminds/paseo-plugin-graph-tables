@@ -519,6 +519,8 @@ export interface WebSvgGraphProps {
   theme: PluginTheme;
   selectedNodeId: string | null;
   focusedIds: ReadonlySet<string> | null;
+  activeStepNumber?: number | null;
+  scale?: number;
   onSelectNode(id: string | null): void;
 }
 
@@ -543,6 +545,8 @@ export function WebSvgGraph({
   theme,
   selectedNodeId,
   focusedIds,
+  activeStepNumber = null,
+  scale = 1,
   onSelectNode,
 }: WebSvgGraphProps): ReactElement | null {
   if (!isWebPlatform) return null;
@@ -580,8 +584,8 @@ export function WebSvgGraph({
           viewBox: "0 0 10 10",
           refX: 8.5,
           refY: 5,
-          markerWidth: 6.5,
-          markerHeight: 6.5,
+          markerWidth: 7.5,
+          markerHeight: 7.5,
           orient: "auto-start-reverse",
         },
         svgEl("path", { d: "M 0 1 L 9 5 L 0 9 z", fill: theme.colors.accent }),
@@ -591,10 +595,13 @@ export function WebSvgGraph({
 
   // Groups
   for (const grp of layout.groups) {
+    const groupDimmed =
+      focusedIds !== null &&
+      !layout.nodes.some((n) => n.node.group === grp.node.id && focusedIds.has(n.node.id));
     children.push(
       svgEl(
         "g",
-        { key: `grp-${grp.node.id}` },
+        { key: `grp-${grp.node.id}`, opacity: groupDimmed ? 0.25 : 1 },
         svgEl("rect", {
           x: grp.x,
           y: grp.y,
@@ -624,13 +631,25 @@ export function WebSvgGraph({
 
   // Edges
   for (const edgeBox of layout.edges) {
-    const isHighlighted =
+    const isSelectedEdge =
       selectedNodeId !== null &&
       (edgeBox.edge.from === selectedNodeId || edgeBox.edge.to === selectedNodeId);
-    const isDimmed =
-      (selectedNodeId !== null && !isHighlighted) ||
-      (focusedIds !== null &&
-        (!focusedIds.has(edgeBox.edge.from) || !focusedIds.has(edgeBox.edge.to)));
+    const bothFocused =
+      focusedIds !== null &&
+      focusedIds.has(edgeBox.edge.from) &&
+      focusedIds.has(edgeBox.edge.to);
+    const halfFocused =
+      focusedIds !== null &&
+      !bothFocused &&
+      (focusedIds.has(edgeBox.edge.from) || focusedIds.has(edgeBox.edge.to));
+    const isHighlighted = isSelectedEdge || bothFocused;
+
+    let edgeOpacity = 0.85;
+    if (focusedIds !== null) {
+      edgeOpacity = bothFocused ? 1 : halfFocused ? 0.32 : 0.14;
+    } else if (selectedNodeId !== null) {
+      edgeOpacity = isSelectedEdge ? 1 : 0.2;
+    }
 
     const strokeColor =
       edgeBox.edge.kind === "blocks"
@@ -648,12 +667,12 @@ export function WebSvgGraph({
     children.push(
       svgEl(
         "g",
-        { key: `edge-${edgeBox.index}`, opacity: isDimmed ? 0.25 : 0.9 },
+        { key: `edge-${edgeBox.index}`, opacity: edgeOpacity },
         svgEl("path", {
           d,
           fill: "none",
           stroke: strokeColor,
-          strokeWidth: isHighlighted ? 2.2 : 1.5,
+          strokeWidth: isHighlighted ? 2.8 : 1.7,
           strokeDasharray: dashed ? "5 4" : undefined,
           markerEnd: isHighlighted ? "url(#gt-arrow-accent)" : "url(#gt-arrow)",
         }),
@@ -670,9 +689,9 @@ export function WebSvgGraph({
                   width: pillW,
                   height: 18,
                   rx: 4,
-                  fill: theme.colors.surface0,
-                  stroke: theme.colors.border,
-                  strokeWidth: 0.8,
+                  fill: theme.colors.surface2,
+                  stroke: isHighlighted ? theme.colors.accent : theme.colors.border,
+                  strokeWidth: isHighlighted ? 1.2 : 0.9,
                 }),
                 svgEl(
                   "text",
@@ -680,8 +699,9 @@ export function WebSvgGraph({
                     x: edgeBox.labelX,
                     y: edgeBox.labelY + 3.5,
                     textAnchor: "middle",
-                    fill: theme.colors.foregroundMuted,
+                    fill: isHighlighted ? theme.colors.foreground : theme.colors.foregroundMuted,
                     fontSize: 10,
+                    fontWeight: isHighlighted ? "700" : "500",
                   },
                   clipped,
                 ),
@@ -698,15 +718,32 @@ export function WebSvgGraph({
     const isSelected = selectedNodeId === node.id;
     const isFocusTarget = focusedIds ? focusedIds.has(node.id) : false;
     const isDimmed =
-      (selectedNodeId !== null && !connectedNodes.has(node.id)) ||
-      (focusedIds !== null && !isFocusTarget);
+      (focusedIds !== null && !isFocusTarget) ||
+      (focusedIds === null && selectedNodeId !== null && !connectedNodes.has(node.id));
 
     const sColor = statusHex(node.status, theme);
-    const borderColor = isSelected || isFocusTarget || node.emphasis
-      ? theme.colors.accent
-      : theme.colors.border;
+    const isAccented = isSelected || isFocusTarget || node.emphasis;
+    const borderColor = isAccented ? theme.colors.accent : theme.colors.border;
 
-    const inner: ReactNode[] = [
+    const inner: ReactNode[] = [];
+    if (isFocusTarget || isSelected) {
+      inner.push(
+        svgEl("rect", {
+          key: "halo",
+          x: x - 4,
+          y: y - 4,
+          width: width + 8,
+          height: height + 8,
+          rx: node.type === "decision" ? 20 : 13,
+          fill: "none",
+          stroke: theme.colors.accent,
+          strokeOpacity: 0.34,
+          strokeWidth: 5,
+        }),
+      );
+    }
+
+    inner.push(
       svgEl("rect", {
         key: "bg",
         x,
@@ -714,9 +751,9 @@ export function WebSvgGraph({
         width,
         height,
         rx: node.type === "decision" ? 16 : 9,
-        fill: theme.colors.surface1,
+        fill: isFocusTarget || isSelected ? theme.colors.surface2 : theme.colors.surface1,
         stroke: borderColor,
-        strokeWidth: isSelected || isFocusTarget || node.emphasis ? 2 : 1,
+        strokeWidth: isFocusTarget || isSelected ? 2.5 : node.emphasis ? 1.8 : 1,
       }),
       svgEl(
         "text",
@@ -724,15 +761,42 @@ export function WebSvgGraph({
           key: "kind",
           x: x + 10,
           y: y + 15,
-          fill: theme.colors.foregroundMuted,
+          fill: isFocusTarget ? theme.colors.accent : theme.colors.foregroundMuted,
           fontSize: 9.5,
-          fontWeight: "600",
+          fontWeight: "700",
         },
         (node.type ?? "service").toUpperCase(),
       ),
-    ];
+    );
 
-    if (sColor) {
+    if (isFocusTarget && activeStepNumber !== null) {
+      const badgeText = `STEP ${activeStepNumber}`;
+      const badgeW = badgeText.length * 5.8 + 12;
+      inner.push(
+        svgEl("rect", {
+          key: "step-pill-bg",
+          x: x + width - badgeW - 6,
+          y: y + 5,
+          width: badgeW,
+          height: 15,
+          rx: 7.5,
+          fill: theme.colors.accent,
+        }),
+        svgEl(
+          "text",
+          {
+            key: "step-pill-txt",
+            x: x + width - badgeW / 2 - 6,
+            y: y + 15,
+            textAnchor: "middle",
+            fill: theme.colors.accentForeground,
+            fontSize: 8.5,
+            fontWeight: "700",
+          },
+          badgeText,
+        ),
+      );
+    } else if (sColor) {
       inner.push(
         svgEl("circle", {
           key: "dot",
@@ -840,7 +904,7 @@ export function WebSvgGraph({
         "g",
         {
           key: `node-${node.id}`,
-          opacity: isDimmed ? 0.35 : 1,
+          opacity: isDimmed ? 0.18 : 1,
           style: { cursor: "pointer" },
           onClick: () => onSelectNode(isSelected ? null : node.id),
         },
@@ -852,8 +916,8 @@ export function WebSvgGraph({
   return svgEl(
     "svg",
     {
-      width: layout.width,
-      height: layout.height,
+      width: Math.max(240, Math.round(layout.width * scale)),
+      height: Math.max(120, Math.round(layout.height * scale)),
       viewBox: `0 0 ${layout.width} ${layout.height}`,
       style: { display: "block" },
     },

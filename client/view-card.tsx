@@ -10,19 +10,19 @@ import type { ColumnSpec, ControlSpec, ViewSpec, WhereClause } from "../shared/v
 import { ChartView } from "./chart-view";
 import { ControlsBar } from "./controls-bar";
 import { CalendarView, CodeView, ColorsView, GanttView, HeatmapView } from "./extra-views";
+import { hasNumericColumn } from "./format";
 import { GraphView } from "./graph-view";
 import { StatsView } from "./stats-view";
 import { TableView } from "./table-view";
+import { openViewInFullScreen, type ViewCardInput } from "./viewer-store";
 
-export type ViewCardInput =
-  | { kind: "inline"; spec: ViewSpec }
-  | { kind: "token"; viewId: string }
-  | { kind: "gfm-table"; columns: ColumnSpec[]; rows: DataRow[]; title?: string };
+export type { ViewCardInput } from "./viewer-store";
 
 export interface ViewCardProps {
   input: ViewCardInput;
   theme: PluginTheme;
   compact: boolean;
+  isFullScreen?: boolean;
 }
 
 function resolveInlineControls(
@@ -76,7 +76,7 @@ function resolveInlineControls(
   return { where, sort, top, search };
 }
 
-export function ViewCard({ input, theme, compact }: ViewCardProps) {
+export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCardProps) {
   const queryView = useRpc(queryViewRpc);
 
   const initialSort = input.kind === "inline" ? input.spec.initial?.sort : undefined;
@@ -167,7 +167,9 @@ export function ViewCard({ input, theme, compact }: ViewCardProps) {
 
   const effectiveType = viewModeOverride ?? resolvedSpec.type ?? "table";
   const canToggleTableChart =
-    (resolvedSpec.type === "table" || resolvedSpec.type === "chart") && rows.length > 0;
+    rows.length > 0 &&
+    (resolvedSpec.type === "chart" ||
+      (resolvedSpec.type === "table" && hasNumericColumn(rows, columns)));
   const hasExplicitSearch = (resolvedSpec.controls ?? []).some((c) => c.type === "search");
 
   const styles = useMemo(
@@ -316,7 +318,7 @@ export function ViewCard({ input, theme, compact }: ViewCardProps) {
         ) : effectiveType === "stats" ? (
           <StatsView spec={resolvedSpec} rows={rows} theme={theme} compact={compact} />
         ) : effectiveType === "graph" ? (
-          <GraphView spec={resolvedSpec} theme={theme} compact={compact} />
+          <GraphView spec={resolvedSpec} theme={theme} compact={compact} expanded={expanded} />
         ) : effectiveType === "gantt" ? (
           <GanttView rows={rows} theme={theme} compact={compact} />
         ) : effectiveType === "heatmap" ? (
@@ -393,17 +395,23 @@ export function ViewCard({ input, theme, compact }: ViewCardProps) {
               <Icon name="RotateCw" size={12} color={theme.colors.foreground} />
             </Pressable>
           ) : null}
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => setModalOpen(true)}
-            style={styles.actionBtn}
-          >
-            <Icon name="Maximize2" size={12} color={theme.colors.foreground} />
-          </Pressable>
+          {!isFullScreen ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                if (!openViewInFullScreen(title, input)) {
+                  setModalOpen(true);
+                }
+              }}
+              style={styles.actionBtn}
+            >
+              <Icon name="Maximize2" size={12} color={theme.colors.foreground} />
+            </Pressable>
+          ) : null}
         </View>
       </View>
 
-      {renderBody(false)}
+      {renderBody(isFullScreen)}
 
       <Modal
         title={title}

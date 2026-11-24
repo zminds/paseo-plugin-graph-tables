@@ -14,6 +14,8 @@ import {
   transformShowViewToolCall,
 } from "./client/timeline-transform";
 import { ViewsWorkspacePanel } from "./client/views-panel";
+import { FullViewerScreen } from "./client/viewer-screen";
+import { getViewerEntry, registerFullScreenOpener } from "./client/viewer-store";
 import { pluginSettings } from "./shared/settings";
 
 export default function contribute(client: PluginClientContext) {
@@ -68,6 +70,16 @@ export default function contribute(client: PluginClientContext) {
     Component: ToolBadgeRenderer,
   });
 
+  client.addScreen({
+    id: "viewer",
+    title: (params) => getViewerEntry(params.id)?.title ?? "Data view",
+    Component: FullViewerScreen,
+  });
+
+  registerFullScreenOpener((id) => {
+    client.openScreen({ screenId: "viewer", params: { id } });
+  });
+
   client.addSettingsScreen({
     id: "graph-tables",
     title: "Graph & Tables",
@@ -115,5 +127,7 @@ export default function contribute(client: PluginClientContext) {
     },
   });
 
-  return () => {};
+  return () => {
+    registerFullScreenOpener(null);
+  };
 }

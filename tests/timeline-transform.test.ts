@@ -31,6 +31,12 @@ vi.mock("@getpaseo/plugin/client/ui", () => ({
   SettingsSwitch: "SettingsSwitch",
 }));
 
+import { hasNumericColumn } from "../client/format";
+import {
+  getViewerEntry,
+  openViewInFullScreen,
+  registerFullScreenOpener,
+} from "../client/viewer-store";
 import contribute from "../index.client";
 import {
   createAssistantTransformer,
@@ -230,10 +236,38 @@ describe("timeline transformers", () => {
     expect(toolBadgeSchema.safeParse(compacted?.items[0]?.data).success).toBe(true);
   });
 
+  it("detects numeric columns and opens full-screen viewer store entries", () => {
+    expect(
+      hasNumericColumn(
+        [{ segment: "bundle", where: "client" }],
+        [{ key: "segment", type: "text" }, { key: "where", type: "text" }],
+      ),
+    ).toBe(false);
+
+    expect(
+      hasNumericColumn(
+        [{ segment: "bundle", latency: 12 }],
+        [{ key: "segment", type: "text" }, { key: "latency", type: "number" }],
+      ),
+    ).toBe(true);
+
+    registerFullScreenOpener(null);
+    expect(openViewInFullScreen("Test", { kind: "token", viewId: "v_1" })).toBe(false);
+
+    let openedId = "";
+    registerFullScreenOpener((id) => {
+      openedId = id;
+    });
+    expect(openViewInFullScreen("Test View", { kind: "token", viewId: "v_2" })).toBe(true);
+    expect(getViewerEntry(openedId)?.title).toBe("Test View");
+    registerFullScreenOpener(null);
+  });
+
   it("registers all client contributions and returns a cleanup function", () => {
     const calls = {
       transformers: [] as string[],
       renderers: [] as string[],
+      screens: [] as string[],
       settings: [] as string[],
       panels: [] as string[],
       commands: [] as string[],
@@ -241,12 +275,17 @@ describe("timeline transformers", () => {
     };
     const mockClient = {
       rpc: vi.fn().mockResolvedValue({ status: "ready", revision: "1", values: {} }),
+      openScreen: vi.fn(),
       addTimelineTransformer: vi.fn((c: { id: string }) => {
         calls.transformers.push(c.id);
         return () => {};
       }),
       addTimelineRenderer: vi.fn((c: { kind: string }) => {
         calls.renderers.push(c.kind);
+        return () => {};
+      }),
+      addScreen: vi.fn((c: { id: string }) => {
+        calls.screens.push(c.id);
         return () => {};
       }),
       addSettingsScreen: vi.fn((c: { id: string }) => {
@@ -271,6 +310,7 @@ describe("timeline transformers", () => {
     expect(typeof cleanup).toBe("function");
     expect(calls.transformers).toEqual(["assistant-views", "show-view-tool-calls"]);
     expect(calls.renderers).toEqual(["gt-markdown", "gt-view", "gt-tool-badge"]);
+    expect(calls.screens).toEqual(["viewer"]);
     expect(calls.settings).toEqual(["graph-tables"]);
     expect(calls.panels).toEqual(["views"]);
     expect(calls.commands).toEqual(["open-views", "open-settings"]);

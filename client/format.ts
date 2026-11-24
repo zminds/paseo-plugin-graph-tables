@@ -159,6 +159,14 @@ export function inferChartAxes(
   return { xKey, yKeys };
 }
 
+export function hasNumericColumn(
+  rows: readonly DataRow[],
+  columns: readonly ColumnSpec[],
+): boolean {
+  if (rows.length === 0 || columns.length === 0) return false;
+  return columns.some((col) => rows.slice(0, 30).some((row) => toNumeric(row[col.key]) !== null));
+}
+
 export function parseChartData(
   rows: readonly DataRow[],
   columns: readonly ColumnSpec[],
