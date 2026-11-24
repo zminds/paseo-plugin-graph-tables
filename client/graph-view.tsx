@@ -1,5 +1,6 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Icon, Markdown } from "@getpaseo/plugin/client/ui";
+import { useRpc } from "@getpaseo/plugin/client";
+import { copyText, Icon, Markdown, useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Linking, Pressable, ScrollView, Text, View } from "react-native";
 import {
@@ -10,14 +11,18 @@ import {
   type NodeOffsetMap,
   type PositionedNode,
 } from "../shared/graph-layout";
+import { exportViewRpc } from "../shared/rpc";
+import { exportGraphToSvg } from "../shared/svg-export";
 import type { GraphNode, GraphSpec } from "../shared/view-schema";
-import { type GraphViewTransform, isWebPlatform, WebSvgGraph } from "./web";
+import { type GraphViewTransform, isWebPlatform, rasterizeSvgToPngBase64, WebSvgGraph } from "./web";
 
 export interface GraphViewProps {
   spec: GraphLayoutInput;
   theme: PluginTheme;
   compact: boolean;
   expanded?: boolean;
+  title?: string;
+  viewId?: string;
 }
 
 function statusColor(status: GraphNode["status"], theme: PluginTheme): string {
@@ -91,12 +96,15 @@ function computeFittedTransform(
   };
 }
 
-export function GraphView({ spec, theme, compact, expanded = false }: GraphViewProps) {
+export function GraphView({ spec, theme, compact, expanded = false, title, viewId }: GraphViewProps) {
+  const toast = useToast();
+  const exportView = useRpc(exportViewRpc);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [stepIndex, setStepIndex] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [animateFlow, setAnimateFlow] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [directionOverride, setDirectionOverride] = useState<GraphSpec["direction"] | undefined>(
     undefined,
   );
@@ -252,12 +260,115 @@ export function GraphView({ spec, theme, compact, expanded = false }: GraphViewP
     setDirectionOverride((cur) => ((cur ?? spec.direction ?? "right") === "right" ? "down" : "right"));
   };
 
+  const buildExportSvg = () =>
+    exportGraphToSvg({
+      layout,
+      title: title ?? spec.title,
+      summary: spec.summary,
+      focusedIds,
+      activeStepNumber,
+      colors: theme.colors,
+    });
+
+  const handleCopySvg = async () => {
+    try {
+      const { svg } = buildExportSvg();
+      await copyText(svg);
+      toast.show("Copied diagram SVG", { variant: "success" });
+    } catch {
+      toast.error("Failed to copy SVG");
+    }
+  };
+
+  const handleSaveExport = async (format: "svg" | "png") => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { svg, width, height } = buildExportSvg();
+      const pngBase64 =
+        format === "png" ? await rasterizeSvgToPngBase64(svg, width, height, 2) : null;
+      const res = await exportView({
+        format,
+        title: title ?? spec.title ?? "diagram",
+        viewId,
+        svg,
+        pngBase64: pngBase64 ?? undefined,
+        width,
+        height,
+      });
+      if (res.ok && res.filePath) {
+        await copyText(res.filePath).catch(() => {});
+        toast.show(`Saved ${res.filePath}`, { variant: "success" });
+      } else {
+        toast.error(res.error ?? `Failed to export ${format.toUpperCase()}`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const renderNativeGraph = () => {
     const groupsById = new Map((spec.nodes ?? []).filter((n) => n.type === "group").map((g) => [g.id, g]));
     const nodes = layout.nodes;
 
     return (
       <View style={{ gap: 10 }}>
+        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void handleCopySvg()}
+            style={{
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              backgroundColor: theme.colors.surface1,
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.foreground }}>
+              Copy SVG
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={exporting}
+            onPress={() => void handleSaveExport("svg")}
+            style={{
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              backgroundColor: theme.colors.surface1,
+              opacity: exporting ? 0.5 : 1,
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.foreground }}>
+              Save SVG
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={exporting}
+            onPress={() => void handleSaveExport("png")}
+            style={{
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              backgroundColor: theme.colors.surface1,
+              opacity: exporting ? 0.5 : 1,
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.foreground }}>
+              Save PNG
+            </Text>
+          </Pressable>
+        </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {nodes.map(({ node }) => {
             const isSelected = selectedNodeId === node.id;
@@ -589,6 +700,60 @@ export function GraphView({ spec, theme, compact, expanded = false }: GraphViewP
                 </Text>
               </Pressable>
             ) : null}
+
+            <View style={{ width: 1, height: 14, backgroundColor: theme.colors.border, marginHorizontal: 2 }} />
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void handleCopySvg()}
+              style={{
+                paddingHorizontal: 6,
+                paddingVertical: 4,
+                borderRadius: 6,
+                backgroundColor: theme.colors.surface1,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+              }}
+            >
+              <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.foreground }}>
+                SVG
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={exporting}
+              onPress={() => void handleSaveExport("svg")}
+              style={{
+                paddingHorizontal: 6,
+                paddingVertical: 4,
+                borderRadius: 6,
+                backgroundColor: theme.colors.surface1,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                opacity: exporting ? 0.5 : 1,
+              }}
+            >
+              <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.foreground }}>
+                .svg
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={exporting}
+              onPress={() => void handleSaveExport("png")}
+              style={{
+                paddingHorizontal: 6,
+                paddingVertical: 4,
+                borderRadius: 6,
+                backgroundColor: theme.colors.surface1,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                opacity: exporting ? 0.5 : 1,
+              }}
+            >
+              <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.foreground }}>
+                .png
+              </Text>
+            </Pressable>
           </View>
 
           {/* Subtle Bottom-Right Interaction Hint */}

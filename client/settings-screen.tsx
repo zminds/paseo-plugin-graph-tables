@@ -26,6 +26,12 @@ const MAX_ROWS_OPTIONS = [
   { label: "25,000 rows", value: "25000" },
 ] as const;
 
+const EXPORT_DIR_OPTIONS = [
+  { label: "~/Downloads/paseo-exports", value: "~/Downloads/paseo-exports" },
+  { label: "~/Desktop", value: "~/Desktop" },
+  { label: "Workspace (.paseo-exports)", value: "workspace" },
+] as const;
+
 function SettingsEditor({
   settings,
   theme,
@@ -135,6 +141,19 @@ function SettingsEditor({
             options={MAX_ROWS_OPTIONS}
             disabled={settings.saving}
             onValueChange={(val) => patch({ maxRowsPerQuery: Number(val) })}
+          />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Exports">
+        <SettingsCard>
+          <SettingsSelect
+            label="Export directory"
+            hint="Where Save .md, Save SVG, and Save PNG write files on the daemon host."
+            value={settings.values.exportDirectory}
+            options={EXPORT_DIR_OPTIONS}
+            disabled={settings.saving}
+            onValueChange={(val) => patch({ exportDirectory: val })}
           />
         </SettingsCard>
       </SettingsSection>

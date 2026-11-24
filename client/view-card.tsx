@@ -316,6 +316,8 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
             onPageChange={setPage}
             theme={theme}
             compact={compact}
+            title={resolvedSpec.title}
+            viewId={input.kind === "token" ? input.viewId : undefined}
           />
         ) : effectiveType === "chart" ? (
           <ChartView
@@ -325,11 +327,20 @@ export function ViewCard({ input, theme, compact, isFullScreen = false }: ViewCa
             theme={theme}
             compact={compact}
             expanded={expanded}
+            title={resolvedSpec.title}
+            viewId={input.kind === "token" ? input.viewId : undefined}
           />
         ) : effectiveType === "stats" ? (
           <StatsView spec={resolvedSpec} rows={rows} theme={theme} compact={compact} />
         ) : effectiveType === "graph" ? (
-          <GraphView spec={resolvedSpec} theme={theme} compact={compact} expanded={expanded} />
+          <GraphView
+            spec={resolvedSpec}
+            theme={theme}
+            compact={compact}
+            expanded={expanded}
+            title={resolvedSpec.title}
+            viewId={input.kind === "token" ? input.viewId : undefined}
+          />
         ) : effectiveType === "gantt" ? (
           <GanttView rows={rows} theme={theme} compact={compact} />
         ) : effectiveType === "heatmap" ? (

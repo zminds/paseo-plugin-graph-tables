@@ -134,9 +134,16 @@ export function createQueryViewHandler(
     let fetchedAt = entry.fetchedAt;
     let sourceError: string | null = null;
 
+    const refreshSec = entry.spec.refresh;
+    const isStale =
+      typeof refreshSec === "number" &&
+      refreshSec > 0 &&
+      Date.now() - Date.parse(entry.fetchedAt) >= refreshSec * 1000;
+
     const shouldRequerySource =
       Boolean(activeSource) &&
       (input.refresh === true ||
+        isStale ||
         resolvedControls.sourceOverride !== undefined ||
         (activeSource !== undefined &&
           sourceUsesTemplate(activeSource) &&

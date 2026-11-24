@@ -3,8 +3,15 @@ import { createElement, type ReactElement, type ReactNode, useId, useRef, useSta
 import { Platform } from "react-native";
 import type { GraphLayoutResult, PositionedNode } from "../shared/graph-layout";
 import { truncateVisualText, visualTextUnits } from "../shared/query-engine";
+import {
+  arcSlicePath,
+  buildLinePath,
+  computeNiceScale,
+  formatCompactNumber,
+  type ScatterPoint,
+} from "../shared/svg-export";
 import type { ChartKind } from "../shared/view-schema";
-import { computeNiceScale, formatCompactNumber, type ParsedChartData } from "./format";
+import type { ParsedChartData } from "./format";
 
 export const isWebPlatform = Platform.OS === "web";
 
@@ -14,6 +21,77 @@ const svgEl = createElement as unknown as (
   ...children: ReactNode[]
 ) => ReactElement;
 
+interface WebImageLike {
+  onload: (() => void) | null;
+  onerror: (() => void) | null;
+  src: string;
+}
+
+interface WebCanvasCtx2dLike {
+  scale(x: number, y: number): void;
+  clearRect(x: number, y: number, w: number, h: number): void;
+  drawImage(img: unknown, x: number, y: number, w: number, h: number): void;
+}
+
+interface WebOffscreenCanvasLike {
+  getContext(kind: "2d"): WebCanvasCtx2dLike | null;
+  convertToBlob(opts?: { type?: string }): Promise<{ arrayBuffer(): Promise<ArrayBuffer> }>;
+}
+
+function bytesToBase64(bytes: Uint8Array): string | null {
+  const btoaFn = (globalThis as { btoa?: (s: string) => string }).btoa;
+  if (typeof btoaFn !== "function") return null;
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoaFn(binary);
+}
+
+export async function rasterizeSvgToPngBase64(
+  svg: string,
+  width: number,
+  height: number,
+  pixelRatio = 2,
+): Promise<string | null> {
+  if (!isWebPlatform) return null;
+  const g = globalThis as {
+    Image?: new () => WebImageLike;
+    OffscreenCanvas?: new (w: number, h: number) => WebOffscreenCanvasLike;
+    TextEncoder?: new () => { encode(s: string): Uint8Array };
+  };
+  if (!g.Image || !g.OffscreenCanvas || !g.TextEncoder) return null;
+
+  try {
+    const utf8 = new g.TextEncoder().encode(svg);
+    const svgB64 = bytesToBase64(utf8);
+    if (!svgB64) return null;
+
+    const img = new g.Image();
+    const loaded = await new Promise<boolean>((resolve) => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = `data:image/svg+xml;base64,${svgB64}`;
+    });
+    if (!loaded) return null;
+
+    const outW = Math.max(1, Math.round(width * pixelRatio));
+    const outH = Math.max(1, Math.round(height * pixelRatio));
+    const canvas = new g.OffscreenCanvas(outW, outH);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.scale(pixelRatio, pixelRatio);
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    const blob = await canvas.convertToBlob({ type: "image/png" });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    return bytesToBase64(bytes);
+  } catch {
+    return null;
+  }
+}
+
 export interface WebSvgChartProps {
   kind: ChartKind;
   data: ParsedChartData;
@@ -21,74 +99,39 @@ export interface WebSvgChartProps {
   stacked?: boolean;
   hiddenSeries: ReadonlySet<string>;
   selectedIndex: number | null;
+  hoveredIndex?: number | null;
   onSelectIndex(index: number | null): void;
+  onHoverIndex?(index: number | null): void;
   theme: PluginTheme;
   width: number;
   height: number;
 }
 
-function buildLinePath(
+function buildReverseLinePath(
   points: Array<{ x: number; y: number }>,
   curve: "smooth" | "linear" | "step",
 ): string {
-  if (points.length === 0) return "";
-  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  const reversed = [...points].reverse();
+  if (reversed.length === 0) return "";
+  if (reversed.length === 1) return `L ${reversed[0]!.x.toFixed(1)} ${reversed[0]!.y.toFixed(1)}`;
   if (curve === "step") {
-    let d = `M ${points[0].x} ${points[0].y}`;
-    for (let i = 1; i < points.length; i += 1) {
-      d += ` L ${points[i].x} ${points[i - 1].y} L ${points[i].x} ${points[i].y}`;
+    let d = `L ${reversed[0]!.x.toFixed(1)} ${reversed[0]!.y.toFixed(1)}`;
+    for (let i = 1; i < reversed.length; i += 1) {
+      d += ` L ${reversed[i - 1]!.x.toFixed(1)} ${reversed[i]!.y.toFixed(1)} L ${reversed[i]!.x.toFixed(1)} ${reversed[i]!.y.toFixed(1)}`;
     }
     return d;
   }
   if (curve === "smooth") {
-    let d = `M ${points[0].x} ${points[0].y}`;
-    for (let i = 1; i < points.length; i += 1) {
-      const prev = points[i - 1];
-      const curr = points[i];
-      const mx = (prev.x + curr.x) / 2;
-      d += ` C ${mx} ${prev.y}, ${mx} ${curr.y}, ${curr.x} ${curr.y}`;
+    let d = `L ${reversed[0]!.x.toFixed(1)} ${reversed[0]!.y.toFixed(1)}`;
+    for (let i = 1; i < reversed.length; i += 1) {
+      const prev = reversed[i - 1]!;
+      const curr = reversed[i]!;
+      const mx = ((prev.x + curr.x) / 2).toFixed(1);
+      d += ` C ${mx} ${prev.y.toFixed(1)}, ${mx} ${curr.y.toFixed(1)}, ${curr.x.toFixed(1)} ${curr.y.toFixed(1)}`;
     }
     return d;
   }
-  return points
-    .map((p, idx) => `${idx === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
-    .join(" ");
-}
-
-function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
-  const rad = ((angleDeg - 90) * Math.PI) / 180;
-  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
-}
-
-function arcSlicePath(
-  cx: number,
-  cy: number,
-  rOuter: number,
-  rInner: number,
-  startAngle: number,
-  endAngle: number,
-): string {
-  const sweep = Math.min(359.99, endAngle - startAngle);
-  const largeArc = sweep > 180 ? 1 : 0;
-  const p1 = polarToCartesian(cx, cy, rOuter, startAngle);
-  const p2 = polarToCartesian(cx, cy, rOuter, startAngle + sweep);
-  if (rInner <= 0) {
-    return [
-      `M ${cx} ${cy}`,
-      `L ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`,
-      `A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`,
-      "Z",
-    ].join(" ");
-  }
-  const p3 = polarToCartesian(cx, cy, rInner, startAngle + sweep);
-  const p4 = polarToCartesian(cx, cy, rInner, startAngle);
-  return [
-    `M ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`,
-    `A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`,
-    `L ${p3.x.toFixed(2)} ${p3.y.toFixed(2)}`,
-    `A ${rInner} ${rInner} 0 ${largeArc} 0 ${p4.x.toFixed(2)} ${p4.y.toFixed(2)}`,
-    "Z",
-  ].join(" ");
+  return reversed.map((p) => `L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
 }
 
 export function WebSvgChart({
@@ -98,7 +141,9 @@ export function WebSvgChart({
   stacked = false,
   hiddenSeries,
   selectedIndex,
+  hoveredIndex = null,
   onSelectIndex,
+  onHoverIndex,
   theme,
   width,
   height,
@@ -108,6 +153,7 @@ export function WebSvgChart({
   const visibleSeries = data.series.filter((s) => !hiddenSeries.has(s.key));
   const w = Math.max(280, width);
   const h = Math.max(180, height);
+  const activeIdx = hoveredIndex ?? selectedIndex;
 
   if (kind === "pie" || kind === "donut") {
     const slices = data.pieSlices.filter((s) => s.value > 0);
@@ -125,11 +171,11 @@ export function WebSvgChart({
       const start = angle;
       const end = angle + span;
       angle = end;
-      const isSelected = selectedIndex === slice.rowIndex;
+      const isActive = activeIdx === slice.rowIndex;
       const d = arcSlicePath(
         cx,
         cy,
-        isSelected ? outerR + 5 : outerR,
+        isActive ? outerR + 6 : outerR,
         innerR,
         start,
         end,
@@ -140,17 +186,17 @@ export function WebSvgChart({
         fill: slice.color,
         stroke: theme.colors.surface1,
         strokeWidth: 2,
-        opacity: selectedIndex !== null && !isSelected ? 0.55 : 1,
+        opacity: activeIdx !== null && !isActive ? 0.5 : 1,
         style: { cursor: "pointer" },
-        onClick: () => onSelectIndex(isSelected ? null : slice.rowIndex),
+        onMouseEnter: () => onHoverIndex?.(slice.rowIndex),
+        onMouseLeave: () => onHoverIndex?.(null),
+        onClick: () => onSelectIndex(selectedIndex === slice.rowIndex ? null : slice.rowIndex),
       });
     });
 
     if (kind === "donut") {
       const activeSlice =
-        selectedIndex !== null
-          ? slices.find((s) => s.rowIndex === selectedIndex)
-          : undefined;
+        activeIdx !== null ? slices.find((s) => s.rowIndex === activeIdx) : undefined;
       children.push(
         svgEl(
           "text",
@@ -177,7 +223,7 @@ export function WebSvgChart({
             fill: theme.colors.foregroundMuted,
             fontSize: 11,
           },
-          activeSlice ? activeSlice.label.slice(0, 14) : "Total",
+          activeSlice ? truncateVisualText(activeSlice.label, 14) : "Total",
         ),
       );
     }
@@ -188,7 +234,7 @@ export function WebSvgChart({
         width: w,
         height: h,
         viewBox: `0 0 ${w} ${h}`,
-        style: { display: "block", maxWidth: "100%" },
+        style: { display: "block", maxWidth: "100%", userSelect: "none" },
       },
       ...children,
     );
@@ -205,16 +251,38 @@ export function WebSvgChart({
   if (count === 0 || visibleSeries.length === 0) return null;
 
   if (kind === "scatter") {
-    const validX = data.xNumbers.filter((v): v is number => v !== null);
-    const allY = visibleSeries.flatMap((s) => s.values.filter((v): v is number => v !== null));
-    if (allY.length === 0) return null;
+    const pts: ScatterPoint[] =
+      data.scatterPoints.length > 0
+        ? data.scatterPoints.filter((p) => !hiddenSeries.has(p.seriesKey))
+        : visibleSeries.flatMap((s) =>
+            s.values
+              .map((yVal, idx) =>
+                yVal === null
+                  ? null
+                  : {
+                      seriesKey: s.key,
+                      seriesLabel: s.label,
+                      color: s.color,
+                      x: data.xNumbers[idx] ?? idx,
+                      y: yVal,
+                      xLabel: data.xLabels[idx] ?? String(idx),
+                      rowIndex: idx,
+                    },
+              )
+              .filter((v): v is ScatterPoint => v !== null),
+          );
+    if (pts.length === 0) return null;
 
     const xScale = computeNiceScale(
-      validX.length ? Math.min(...validX) : 0,
-      validX.length ? Math.max(...validX) : Math.max(1, count - 1),
+      Math.min(...pts.map((p) => p.x)),
+      Math.max(...pts.map((p) => p.x)),
       5,
     );
-    const yScale = computeNiceScale(Math.min(...allY), Math.max(...allY), 5);
+    const yScale = computeNiceScale(
+      Math.min(...pts.map((p) => p.y)),
+      Math.max(...pts.map((p) => p.y)),
+      5,
+    );
     const mapX = (val: number) =>
       padLeft + ((val - xScale.min) / Math.max(1e-9, xScale.max - xScale.min)) * plotW;
     const mapY = (val: number) =>
@@ -266,26 +334,24 @@ export function WebSvgChart({
       );
     });
 
-    visibleSeries.forEach((s) => {
-      s.values.forEach((yVal, idx) => {
-        if (yVal === null) return;
-        const xVal = data.xNumbers[idx] ?? idx;
-        const isSelected = selectedIndex === idx;
-        elements.push(
-          svgEl("circle", {
-            key: `pt-${s.key}-${idx}`,
-            cx: mapX(xVal),
-            cy: mapY(yVal),
-            r: isSelected ? 6.5 : 4.5,
-            fill: s.color,
-            fillOpacity: selectedIndex !== null && !isSelected ? 0.35 : 0.85,
-            stroke: isSelected ? theme.colors.foreground : theme.colors.surface1,
-            strokeWidth: isSelected ? 2 : 1,
-            style: { cursor: "pointer" },
-            onClick: () => onSelectIndex(isSelected ? null : idx),
-          }),
-        );
-      });
+    pts.forEach((pt, idx) => {
+      const isActive = activeIdx === pt.rowIndex;
+      elements.push(
+        svgEl("circle", {
+          key: `pt-${pt.seriesKey}-${idx}`,
+          cx: mapX(pt.x),
+          cy: mapY(pt.y),
+          r: isActive ? 6.5 : 4.5,
+          fill: pt.color,
+          fillOpacity: activeIdx !== null && !isActive ? 0.35 : 0.88,
+          stroke: isActive ? theme.colors.foreground : theme.colors.surface1,
+          strokeWidth: isActive ? 2 : 1,
+          style: { cursor: "pointer" },
+          onMouseEnter: () => onHoverIndex?.(pt.rowIndex),
+          onMouseLeave: () => onHoverIndex?.(null),
+          onClick: () => onSelectIndex(selectedIndex === pt.rowIndex ? null : pt.rowIndex),
+        }),
+      );
     });
 
     return svgEl(
@@ -294,7 +360,7 @@ export function WebSvgChart({
         width: w,
         height: h,
         viewBox: `0 0 ${w} ${h}`,
-        style: { display: "block", maxWidth: "100%" },
+        style: { display: "block", maxWidth: "100%", userSelect: "none" },
       },
       ...elements,
     );
@@ -367,7 +433,7 @@ export function WebSvgChart({
 
   for (let idx = 0; idx < count; idx += stepLabel) {
     const rawLbl = data.xLabels[idx] ?? "";
-    const lbl = rawLbl.length > 10 ? `${rawLbl.slice(0, 9)}…` : rawLbl;
+    const lbl = truncateVisualText(rawLbl, 11);
     elements.push(
       svgEl(
         "text",
@@ -384,6 +450,24 @@ export function WebSvgChart({
     );
   }
 
+  // Subtle vertical crosshair when inspecting a point in line/area charts
+  if (kind !== "bar" && activeIdx !== null && activeIdx >= 0 && activeIdx < count) {
+    const guideX = getCategoryX(activeIdx);
+    elements.push(
+      svgEl("line", {
+        key: "guide-x",
+        x1: guideX,
+        y1: padTop,
+        x2: guideX,
+        y2: padTop + plotH,
+        stroke: theme.colors.accent,
+        strokeDasharray: "3 3",
+        strokeOpacity: 0.55,
+        strokeWidth: 1.2,
+      }),
+    );
+  }
+
   if (kind === "bar") {
     if (stacked) {
       const barW = Math.max(6, Math.min(44, slotW * 0.64));
@@ -391,7 +475,7 @@ export function WebSvgChart({
         let posBase = 0;
         let negBase = 0;
         const cx = getCategoryX(idx);
-        const isSelected = selectedIndex === idx;
+        const isActive = activeIdx === idx;
         visibleSeries.forEach((s) => {
           const val = s.values[idx];
           if (val === null || val === 0) return;
@@ -410,9 +494,11 @@ export function WebSvgChart({
               height: Math.max(1.5, Math.abs(yA - yB)),
               rx: 2,
               fill: s.color,
-              opacity: selectedIndex !== null && !isSelected ? 0.45 : 0.92,
+              opacity: activeIdx !== null && !isActive ? 0.45 : 0.94,
               style: { cursor: "pointer" },
-              onClick: () => onSelectIndex(isSelected ? null : idx),
+              onMouseEnter: () => onHoverIndex?.(idx),
+              onMouseLeave: () => onHoverIndex?.(null),
+              onClick: () => onSelectIndex(selectedIndex === idx ? null : idx),
             }),
           );
         });
@@ -422,7 +508,7 @@ export function WebSvgChart({
       const barW = Math.max(4, groupW / Math.max(1, visibleSeries.length) - 2);
       for (let idx = 0; idx < count; idx += 1) {
         const slotLeft = getCategoryX(idx) - groupW / 2;
-        const isSelected = selectedIndex === idx;
+        const isActive = activeIdx === idx;
         visibleSeries.forEach((s, sIdx) => {
           const val = s.values[idx];
           if (val === null) return;
@@ -436,16 +522,73 @@ export function WebSvgChart({
               height: Math.max(1.5, Math.abs(zeroY - yVal)),
               rx: 2,
               fill: s.color,
-              opacity: selectedIndex !== null && !isSelected ? 0.45 : 0.92,
+              opacity: activeIdx !== null && !isActive ? 0.45 : 0.94,
               style: { cursor: "pointer" },
-              onClick: () => onSelectIndex(isSelected ? null : idx),
+              onMouseEnter: () => onHoverIndex?.(idx),
+              onMouseLeave: () => onHoverIndex?.(null),
+              onClick: () => onSelectIndex(selectedIndex === idx ? null : idx),
             }),
           );
         });
       }
     }
+  } else if (kind === "area" && stacked) {
+    // True cumulative stacked area bands
+    const runningTotals = new Array<number>(count).fill(0);
+    visibleSeries.forEach((s) => {
+      const lowerPts: Array<{ x: number; y: number }> = [];
+      const upperPts: Array<{ x: number; y: number; idx: number }> = [];
+      for (let idx = 0; idx < count; idx += 1) {
+        const base = runningTotals[idx] ?? 0;
+        const val = s.values[idx] ?? 0;
+        const top = base + val;
+        runningTotals[idx] = top;
+        const px = getCategoryX(idx);
+        lowerPts.push({ x: px, y: mapY(base) });
+        upperPts.push({ x: px, y: mapY(top), idx });
+      }
+      const topLine = buildLinePath(upperPts, curve);
+      const revLower = buildReverseLinePath(lowerPts, curve);
+      elements.push(
+        svgEl("path", {
+          key: `sarea-${s.key}`,
+          d: `${topLine} ${revLower} Z`,
+          fill: s.color,
+          fillOpacity: 0.28,
+        }),
+        svgEl("path", {
+          key: `sline-${s.key}`,
+          d: topLine,
+          fill: "none",
+          stroke: s.color,
+          strokeWidth: 2,
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+        }),
+      );
+      if (upperPts.length <= 48) {
+        upperPts.forEach((pt) => {
+          const isActive = activeIdx === pt.idx;
+          elements.push(
+            svgEl("circle", {
+              key: `sdot-${s.key}-${pt.idx}`,
+              cx: pt.x,
+              cy: pt.y,
+              r: isActive ? 5.5 : 3.2,
+              fill: isActive ? theme.colors.surface0 : s.color,
+              stroke: s.color,
+              strokeWidth: isActive ? 2.5 : 1,
+              style: { cursor: "pointer" },
+              onMouseEnter: () => onHoverIndex?.(pt.idx),
+              onMouseLeave: () => onHoverIndex?.(null),
+              onClick: () => onSelectIndex(selectedIndex === pt.idx ? null : pt.idx),
+            }),
+          );
+        });
+      }
+    });
   } else {
-    // Line or Area
+    // Line or unstacked Area
     visibleSeries.forEach((s) => {
       const pts: Array<{ x: number; y: number; idx: number }> = [];
       s.values.forEach((val, idx) => {
@@ -458,7 +601,7 @@ export function WebSvgChart({
       const linePath = buildLinePath(pts, curve);
       if (kind === "area" && pts.length >= 2) {
         const baseLine = Math.min(padTop + plotH, Math.max(padTop, zeroY));
-        const areaPath = `${linePath} L ${pts[pts.length - 1].x} ${baseLine} L ${pts[0].x} ${baseLine} Z`;
+        const areaPath = `${linePath} L ${pts[pts.length - 1]!.x} ${baseLine} L ${pts[0]!.x} ${baseLine} Z`;
         elements.push(
           svgEl("path", {
             key: `area-${s.key}`,
@@ -483,18 +626,20 @@ export function WebSvgChart({
 
       if (pts.length <= 48) {
         pts.forEach((pt) => {
-          const isSelected = selectedIndex === pt.idx;
+          const isActive = activeIdx === pt.idx;
           elements.push(
             svgEl("circle", {
               key: `dot-${s.key}-${pt.idx}`,
               cx: pt.x,
               cy: pt.y,
-              r: isSelected ? 5.5 : 3.2,
-              fill: isSelected ? theme.colors.surface0 : s.color,
+              r: isActive ? 5.5 : 3.2,
+              fill: isActive ? theme.colors.surface0 : s.color,
               stroke: s.color,
-              strokeWidth: isSelected ? 2.5 : 1,
+              strokeWidth: isActive ? 2.5 : 1,
               style: { cursor: "pointer" },
-              onClick: () => onSelectIndex(isSelected ? null : pt.idx),
+              onMouseEnter: () => onHoverIndex?.(pt.idx),
+              onMouseLeave: () => onHoverIndex?.(null),
+              onClick: () => onSelectIndex(selectedIndex === pt.idx ? null : pt.idx),
             }),
           );
         });
@@ -508,7 +653,7 @@ export function WebSvgChart({
       width: w,
       height: h,
       viewBox: `0 0 ${w} ${h}`,
-      style: { display: "block", maxWidth: "100%" },
+      style: { display: "block", maxWidth: "100%", userSelect: "none" },
     },
     ...elements,
   );

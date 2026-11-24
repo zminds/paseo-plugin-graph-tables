@@ -1,22 +1,25 @@
 import type { PluginTheme } from "@getpaseo/plugin";
+import { rowsToCsv, rowsToMarkdownTable } from "../shared/export-format";
 import type { DataRow } from "../shared/query-engine";
-import { formatCellValue } from "../shared/query-engine";
+import {
+  computeNiceScale,
+  formatCompactNumber,
+  type ChartExportData,
+  type ChartExportSeries,
+  type ScatterPoint,
+} from "../shared/svg-export";
 import type { ColumnSpec, ViewSpec } from "../shared/view-schema";
 
-export interface ChartSeries {
-  key: string;
-  label: string;
-  color: string;
-  values: Array<number | null>;
-}
+export {
+  computeNiceScale,
+  formatCompactNumber,
+  rowsToCsv,
+  rowsToMarkdownTable,
+  type ScatterPoint,
+};
 
-export interface ParsedChartData {
-  xKey: string;
-  xLabels: string[];
-  xNumbers: Array<number | null>;
-  series: ChartSeries[];
-  pieSlices: Array<{ label: string; value: number; color: string; rowIndex: number }>;
-}
+export type ChartSeries = ChartExportSeries;
+export type ParsedChartData = ChartExportData;
 
 const FALLBACK_PALETTE = [
   "#3b82f6",
@@ -64,52 +67,6 @@ export function getSeriesColors(theme: PluginTheme, customColors?: unknown[]): s
     ...FALLBACK_PALETTE,
   ];
   return [...new Set(base.filter(Boolean))];
-}
-
-export function computeNiceScale(
-  rawMin: number,
-  rawMax: number,
-  tickCount = 5,
-): { min: number; max: number; ticks: number[] } {
-  let min = Number.isFinite(rawMin) ? rawMin : 0;
-  let max = Number.isFinite(rawMax) ? rawMax : 1;
-  if (min === max) {
-    if (min === 0) {
-      max = 1;
-    } else if (min > 0) {
-      min = 0;
-    } else {
-      max = 0;
-    }
-  }
-  if (min > max) [min, max] = [max, min];
-
-  const range = max - min;
-  const roughStep = range / Math.max(1, tickCount - 1);
-  const mag = Math.pow(10, Math.floor(Math.log10(roughStep)));
-  const norm = roughStep / mag;
-  let niceStep = mag;
-  if (norm > 5) niceStep = 10 * mag;
-  else if (norm > 2) niceStep = 5 * mag;
-  else if (norm > 1) niceStep = 2 * mag;
-
-  const niceMin = Math.floor(min / niceStep) * niceStep;
-  const niceMax = Math.ceil(max / niceStep) * niceStep;
-  const ticks: number[] = [];
-  for (let v = niceMin; v <= niceMax + niceStep * 0.25; v += niceStep) {
-    ticks.push(Number(v.toFixed(6)));
-  }
-  return { min: niceMin, max: niceMax, ticks };
-}
-
-export function formatCompactNumber(value: number): string {
-  if (!Number.isFinite(value)) return String(value);
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (abs >= 10_000) return `${(value / 1_000).toFixed(1)}K`;
-  if (Number.isInteger(value)) return String(value);
-  return value.toFixed(abs < 10 ? 2 : 1);
 }
 
 function toNumeric(val: unknown): number | null {
@@ -183,21 +140,32 @@ export function parseChartData(
     const xSeen = new Set<string>();
     const groupNames: string[] = [];
     const groupSeen = new Set<string>();
+    const groupColorIndex = new Map<string, number>();
     const matrix = new Map<string, Map<string, number>>();
+    const rawScatter: Array<{
+      gVal: string;
+      xVal: string;
+      xNum: number | null;
+      yNum: number;
+      rowIndex: number;
+    }> = [];
 
-    for (const row of rows) {
+    rows.forEach((row, idx) => {
       const xVal = String(row[xKey] ?? "");
       const gVal = String(row[groupKey] ?? "Default");
       const yNum = toNumeric(row[primaryY]);
+      const xNum = toNumeric(row[xKey]);
       if (!xSeen.has(xVal)) {
         xSeen.add(xVal);
         xLabels.push(xVal);
       }
       if (!groupSeen.has(gVal)) {
         groupSeen.add(gVal);
+        groupColorIndex.set(gVal, groupNames.length);
         groupNames.push(gVal);
       }
       if (yNum !== null) {
+        rawScatter.push({ gVal, xVal, xNum, yNum, rowIndex: idx });
         let bucket = matrix.get(gVal);
         if (!bucket) {
           bucket = new Map();
@@ -205,20 +173,33 @@ export function parseChartData(
         }
         bucket.set(xVal, (bucket.get(xVal) ?? 0) + yNum);
       }
-    }
+    });
 
+    const xIndexMap = new Map(xLabels.map((lbl, idx) => [lbl, idx]));
     const xNumbers = xLabels.map((lbl) => toNumeric(lbl));
     const series: ChartSeries[] = groupNames.map((gName, idx) => ({
       key: gName,
       label: gName,
-      color: palette[idx % palette.length],
+      color: palette[idx % palette.length]!,
       values: xLabels.map((lbl) => matrix.get(gName)?.get(lbl) ?? null),
     }));
     const pieSlices = groupNames.map((gName, idx) => {
       const sum = xLabels.reduce((acc, lbl) => acc + (matrix.get(gName)?.get(lbl) ?? 0), 0);
-      return { label: gName, value: sum, color: palette[idx % palette.length], rowIndex: idx };
+      return { label: gName, value: sum, color: palette[idx % palette.length]!, rowIndex: idx };
     });
-    return { xKey, xLabels, xNumbers, series, pieSlices };
+    const scatterPoints: ScatterPoint[] = rawScatter.map((pt) => {
+      const gIdx = groupColorIndex.get(pt.gVal) ?? 0;
+      return {
+        seriesKey: pt.gVal,
+        seriesLabel: pt.gVal,
+        color: palette[gIdx % palette.length]!,
+        x: pt.xNum ?? xIndexMap.get(pt.xVal) ?? pt.rowIndex,
+        y: pt.yNum,
+        xLabel: pt.xVal,
+        rowIndex: pt.rowIndex,
+      };
+    });
+    return { xKey, xLabels, xNumbers, series, pieSlices, scatterPoints };
   }
 
   const xLabels = rows.map((row, idx) => {
@@ -231,7 +212,7 @@ export function parseChartData(
   const series: ChartSeries[] = yKeys.map((yKey, idx) => ({
     key: yKey,
     label: colMap.get(yKey)?.label ?? yKey,
-    color: palette[idx % palette.length],
+    color: palette[idx % palette.length]!,
     values: rows.map((row) => toNumeric(row[yKey])),
   }));
 
@@ -239,30 +220,25 @@ export function parseChartData(
   const pieSlices = rows.map((_row, idx) => ({
     label: xLabels[idx] ?? `#${idx + 1}`,
     value: Math.max(0, firstSeries?.values[idx] ?? 0),
-    color: palette[idx % palette.length],
+    color: palette[idx % palette.length]!,
     rowIndex: idx,
   }));
 
-  return { xKey, xLabels, xNumbers, series, pieSlices };
-}
+  const scatterPoints: ScatterPoint[] = [];
+  for (const s of series) {
+    s.values.forEach((yVal, idx) => {
+      if (yVal === null) return;
+      scatterPoints.push({
+        seriesKey: s.key,
+        seriesLabel: s.label,
+        color: s.color,
+        x: xNumbers[idx] ?? idx,
+        y: yVal,
+        xLabel: xLabels[idx] ?? `#${idx + 1}`,
+        rowIndex: idx,
+      });
+    });
+  }
 
-export function rowsToCsv(columns: readonly ColumnSpec[], rows: readonly DataRow[]): string {
-  const escape = (val: string) =>
-    /[",\n\r]/.test(val) ? `"${val.replace(/"/g, '""')}"` : val;
-  const header = columns.map((c) => escape(c.label ?? c.key)).join(",");
-  const body = rows.map((row) =>
-    columns
-      .map((col) => {
-        const raw = row[col.key];
-        const formatted =
-          raw === null || raw === undefined
-            ? ""
-            : typeof raw === "number" || typeof raw === "boolean"
-              ? String(raw)
-              : formatCellValue(raw, col.type);
-        return escape(formatted);
-      })
-      .join(","),
-  );
-  return [header, ...body].join("\n");
+  return { xKey, xLabels, xNumbers, series, pieSlices, scatterPoints };
 }

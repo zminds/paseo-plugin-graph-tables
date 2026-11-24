@@ -50,3 +50,24 @@ export const listViewsRpc = defineRpc({
     ),
   }),
 });
+
+export const exportViewRpc = defineRpc({
+  name: "views.export",
+  input: z.object({
+    format: z.enum(["markdown", "csv", "json", "svg", "png"]),
+    title: z.string().optional(),
+    content: z.string().optional(),
+    svg: z.string().optional(),
+    pngBase64: z.string().optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    viewId: z.string().optional(),
+  }),
+  output: z.object({
+    ok: z.boolean(),
+    filePath: z.string().nullable(),
+    bytes: z.number(),
+    mimeType: z.string(),
+    error: z.string().nullable(),
+  }),
+});

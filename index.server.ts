@@ -1,9 +1,10 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { createExportViewHandler } from "./server/export";
 import { createListViewsHandler, createQueryViewHandler } from "./server/handlers";
 import { createShowViewTool } from "./server/show-view-tool";
 import { ViewStore } from "./server/view-store";
 import { GRAPH_TABLES_SYSTEM_PROMPT } from "./shared/prompt";
-import { listViewsRpc, queryViewRpc } from "./shared/rpc";
+import { exportViewRpc, listViewsRpc, queryViewRpc } from "./shared/rpc";
 import { DEFAULT_SETTINGS, pluginSettings, type GraphTablesSettings } from "./shared/settings";
 
 export default function contribute(server: PluginServerContext) {
@@ -24,6 +25,7 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(queryViewRpc, createQueryViewHandler(store, getSettings));
   server.handle(listViewsRpc, createListViewsHandler(store));
+  server.handle(exportViewRpc, createExportViewHandler(store, getSettings));
 
   const removeOpenHook = server.addHook("agent.open.before", async ({ request }) => {
     if (request.purpose !== "interactive" || request.background) {

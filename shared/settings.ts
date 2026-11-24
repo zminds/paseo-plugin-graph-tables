@@ -17,6 +17,7 @@ export const pluginSettings = defineSettings({
     allowScriptSource: z.boolean().default(false),
     defaultPageSize: z.number().int().min(5).max(200).default(25),
     maxRowsPerQuery: z.number().int().min(100).max(50000).default(5000),
+    exportDirectory: z.string().default("~/Downloads/paseo-exports"),
   }),
 });
 

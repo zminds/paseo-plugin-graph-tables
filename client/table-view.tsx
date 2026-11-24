@@ -1,11 +1,12 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { openExternalUrl } from "@getpaseo/plugin/client";
+import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Icon, TextInput, copyText, useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View, type LayoutChangeEvent } from "react-native";
 import { formatCellValue, visualTextUnits, type DataRow } from "../shared/query-engine";
+import { exportViewRpc } from "../shared/rpc";
 import type { ColumnSpec } from "../shared/view-schema";
-import { rowsToCsv } from "./format";
+import { rowsToCsv, rowsToMarkdownTable } from "./format";
 
 export interface TableViewProps {
   columns: readonly ColumnSpec[];
@@ -22,6 +23,8 @@ export interface TableViewProps {
   onPageChange(nextPage: number): void;
   theme: PluginTheme;
   compact: boolean;
+  title?: string;
+  viewId?: string;
 }
 
 const INDICATOR_COL_WIDTH = 30;
@@ -66,10 +69,14 @@ export function TableView({
   onPageChange,
   theme,
   compact,
+  title,
+  viewId,
 }: TableViewProps) {
   const toast = useToast();
+  const exportView = useRpc(exportViewRpc);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
+  const [savingMd, setSavingMd] = useState<boolean>(false);
   const totalPages = Math.max(1, Math.ceil(filteredRows / Math.max(1, pageSize)));
 
   useEffect(() => {
@@ -296,6 +303,39 @@ export function TableView({
     }
   };
 
+  const handleCopyMarkdown = async () => {
+    try {
+      await copyText(rowsToMarkdownTable(columns, rows));
+      toast.show("Copied visible rows as Markdown", { variant: "success" });
+    } catch {
+      toast.error("Failed to copy Markdown");
+    }
+  };
+
+  const handleSaveMarkdown = async () => {
+    if (savingMd) return;
+    setSavingMd(true);
+    try {
+      const md = rowsToMarkdownTable(columns, rows);
+      const res = await exportView({
+        format: "markdown",
+        title: title ?? "table",
+        viewId,
+        content: md,
+      });
+      if (res.ok && res.filePath) {
+        await copyText(res.filePath).catch(() => {});
+        toast.show(`Saved ${res.filePath}`, { variant: "success" });
+      } else {
+        toast.error(res.error ?? "Failed to save Markdown");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export failed");
+    } finally {
+      setSavingMd(false);
+    }
+  };
+
   const handleCopyText = async (label: string, text: string) => {
     try {
       await copyText(text);
@@ -327,10 +367,32 @@ export function TableView({
         ) : (
           <View />
         )}
-        <Pressable accessibilityRole="button" onPress={() => void handleCopyCsv()} style={styles.csvButton}>
-          <Icon name="Copy" size={12} color={theme.colors.foregroundMuted} />
-          <Text style={styles.csvText}>CSV</Text>
-        </Pressable>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void handleCopyCsv()}
+            style={styles.csvButton}
+          >
+            <Icon name="Copy" size={12} color={theme.colors.foregroundMuted} />
+            <Text style={styles.csvText}>CSV</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void handleCopyMarkdown()}
+            style={styles.csvButton}
+          >
+            <Icon name="Copy" size={12} color={theme.colors.foregroundMuted} />
+            <Text style={styles.csvText}>MD</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={savingMd}
+            onPress={() => void handleSaveMarkdown()}
+            style={[styles.csvButton, savingMd ? { opacity: 0.5 } : null]}
+          >
+            <Text style={styles.csvText}>Save .md</Text>
+          </Pressable>
+        </View>
       </View>
 
       {columns.length === 0 ? (

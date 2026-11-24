@@ -70,6 +70,14 @@ For small static payloads, emit a fenced JSON block directly (`beluga-view` and 
 ### Chart example
 Supported `chart` types: `line`, `area`, `bar`, `pie`, `donut`, `scatter`. Use one measure per chart (never dual Y-axes). Use `group` for long rows, `curve: "smooth"|"linear"|"step"`, `stacked: true`, `colors: [...]`.
 
+### Export & Demo Gallery
+
+Every interactive view includes built-in export controls in the client UI (saving to `~/Downloads/paseo-exports` by default, configurable in **Settings → Graph & Tables → Exports**):
+- **Tables**: `CSV` (clipboard), `MD` (GFM Markdown table to clipboard), and `Save .md` (writes `.md` via `views.export`).
+- **Charts (`bar`, `line`, `area`, `pie`, `donut`, `scatter`)**: Interactive chart-type switcher, hover readouts, `Copy SVG`, `Save SVG`, and `Save PNG`.
+- **Graphs (`paseo-graph` / `beluga-graph`)**: Draggable nodes and groups, pan/zoom, animated flow toggle, step playback, `SVG` (copy), `.svg` (save), and `.png` (save).
+- **Demo Gallery (`/views`)**: The **Views** workspace panel includes a `Demo Gallery` tab to preview and test all view types and export workflows without an active agent session.
+
 ### Stats, Gantt, Heatmap, Calendar
 - `stats`: `{"type": "stats", "items": [{"label": "p95", "value": 182, "unit": "ms", "delta": -12, "invert": true, "trend": [210, 195, 182]}]}`
 - `gantt`: `{"type": "gantt", "data": [{"task": "Design", "start": "2026-11-02", "end": "2026-11-06", "group": "Web", "progress": 0.6, "status": "active", "milestone": false}]}`
