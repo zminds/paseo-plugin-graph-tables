@@ -122,15 +122,6 @@ function estimateNodeSize(node: GraphNode): { width: number; height: number } {
   return { width, height };
 }
 
-function rectsOverlap(a: Rect, b: Rect, pad = 0): boolean {
-  return (
-    a.x - pad < b.x + b.width + pad &&
-    a.x + a.width + pad > b.x - pad &&
-    a.y - pad < b.y + b.height + pad &&
-    a.y + a.height + pad > b.y - pad
-  );
-}
-
 function segmentIntersectsRect(a: Point, b: Point, r: Rect, pad: number): boolean {
   const rx1 = r.x - pad;
   const ry1 = r.y - pad;
@@ -281,110 +272,23 @@ function pickLabelAnchor(rawPoints: Point[], edgeOrderShift = 0): Point {
   };
 }
 
-function buildGroups(
-  groupNodes: GraphNode[],
-  positionedNodes: PositionedNode[],
-  nodeDepthMap: ReadonlyMap<string, number>,
-): PositionedGroup[] {
-  const nodeMap = new Map(positionedNodes.map((n) => [n.node.id, n]));
-  const groupNodeSet = new Set(groupNodes.map((g) => g.id));
-
-  // Direct content members per group
-  const directMembers = new Map<string, string[]>();
-  for (const g of groupNodes) directMembers.set(g.id, []);
-  for (const pn of positionedNodes) {
-    if (pn.node.group && directMembers.has(pn.node.group)) {
-      directMembers.get(pn.node.group)!.push(pn.node.id);
-    }
+function groupFrame(group: GraphNode, children: readonly Rect[]): Rect {
+  if (children.length === 0) {
+    return { x: 0, y: 0, width: Math.max(180, visualTextUnits(group.label) * 8 + 64), height: 92 };
   }
 
-  // Child groups per group (if nested groups exist)
-  const childGroups = new Map<string, string[]>();
-  for (const g of groupNodes) childGroups.set(g.id, []);
-  for (const g of groupNodes) {
-    if (g.group && childGroups.has(g.group)) {
-      childGroups.get(g.group)!.push(g.id);
-    }
-  }
-
-  // Collect transitive content member ids per group
-  const collectMemberIds = (groupId: string, seen = new Set<string>()): string[] => {
-    if (seen.has(groupId)) return [];
-    seen.add(groupId);
-    const out = [...(directMembers.get(groupId) ?? [])];
-    for (const cg of childGroups.get(groupId) ?? []) {
-      out.push(...collectMemberIds(cg, seen));
-    }
-    return out;
+  const left = Math.min(...children.map((child) => child.x));
+  const top = Math.min(...children.map((child) => child.y));
+  const right = Math.max(...children.map((child) => child.x + child.width));
+  const bottom = Math.max(...children.map((child) => child.y + child.height));
+  const contentWidth = right - left + GROUP_PAD_X * 2;
+  const width = Math.max(contentWidth, Math.ceil(visualTextUnits(group.label) * 7.8) + 64);
+  return {
+    x: left - GROUP_PAD_X - (width - contentWidth) / 2,
+    y: top - GROUP_PAD_TOP,
+    width,
+    height: bottom - top + GROUP_PAD_TOP + GROUP_PAD_BOTTOM,
   };
-
-  // Process deeper (inner) groups before outer groups
-  const sortedGroups = [...groupNodes].sort(
-    (a, b) => (nodeDepthMap.get(b.id) ?? 0) - (nodeDepthMap.get(a.id) ?? 0),
-  );
-
-  const builtMap = new Map<string, PositionedGroup>();
-  for (const g of sortedGroups) {
-    const childIds = directMembers.get(g.id) ?? [];
-    const nestedIds = childGroups.get(g.id) ?? [];
-    const memberIds = collectMemberIds(g.id);
-
-    const rects: Rect[] = [];
-    for (const id of childIds) {
-      const pn = nodeMap.get(id);
-      if (pn) rects.push(pn);
-    }
-    for (const gid of nestedIds) {
-      const pg = builtMap.get(gid);
-      if (pg) rects.push(pg);
-    }
-
-    if (rects.length === 0) {
-      // Empty group box fallback
-      const emptyRect: PositionedGroup = {
-        node: g,
-        x: OUTER_PAD,
-        y: OUTER_PAD,
-        width: Math.max(180, visualTextUnits(g.label) * 8 + 64),
-        height: 92,
-        memberIds: [],
-      };
-      builtMap.set(g.id, emptyRect);
-      continue;
-    }
-
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    for (const r of rects) {
-      if (r.x < minX) minX = r.x;
-      if (r.y < minY) minY = r.y;
-      if (r.x + r.width > maxX) maxX = r.x + r.width;
-      if (r.y + r.height > maxY) maxY = r.y + r.height;
-    }
-
-    const titleMinWidth = Math.ceil(visualTextUnits(g.label) * 7.8) + 64;
-    const contentWidth = maxX - minX + GROUP_PAD_X * 2;
-    const width = Math.max(contentWidth, titleMinWidth);
-    const extraW = Math.max(0, width - contentWidth);
-
-    builtMap.set(g.id, {
-      node: g,
-      x: minX - GROUP_PAD_X - extraW / 2,
-      y: minY - GROUP_PAD_TOP,
-      width,
-      height: maxY - minY + GROUP_PAD_TOP + GROUP_PAD_BOTTOM,
-      memberIds,
-    });
-  }
-
-  // Return in original groupNodes order (outermost groups first so painters draw parent before child)
-  return groupNodes
-    .filter((g) => groupNodeSet.has(g.id))
-    .sort((a, b) => (nodeDepthMap.get(a.id) ?? 0) - (nodeDepthMap.get(b.id) ?? 0))
-    .map((g) => builtMap.get(g.id)!)
-    .filter(Boolean);
 }
 
 function routeEdges(
@@ -487,10 +391,8 @@ function routeEdges(
       (direction === "left" && dstCx > srcCx + 16) ||
       (direction === "down" && dstCy < srcCy - 16) ||
       (direction === "up" && dstCy > srcCy + 16) ||
-      (direction === "right" && dst.layer < src.layer) ||
-      (direction === "left" && dst.layer < src.layer) ||
-      (direction === "down" && dst.layer < src.layer) ||
-      (direction === "up" && dst.layer < src.layer);
+      (src.node.group === dst.node.group && dst.layer < src.layer);
+    const adjacentLayers = src.node.group === dst.node.group && Math.abs(dst.layer - src.layer) <= 1;
 
     // Parallel / opposite edge lateral lane separation
     let portOffset = 0;
@@ -530,7 +432,7 @@ function routeEdges(
         x2 = direction === "right" ? dst.x : dst.x + dst.width;
         y1 = srcCy + portOffset;
         y2 = dstCy + portOffset;
-      } else if (isBidirectional && Math.abs(dst.layer - src.layer) <= 1 && !isReverseReturnOnOppositeSide) {
+      } else if (isBidirectional && adjacentLayers && !isReverseReturnOnOppositeSide) {
         // Adjacent reverse edge in a 2-way pair: direct return facing ports with lateral separation
         x1 = forwardRight ? src.x + src.width : src.x;
         x2 = forwardRight ? dst.x : dst.x + dst.width;
@@ -684,7 +586,7 @@ function routeEdges(
       x2 = dstCx + portOffset;
       y1 = direction === "down" ? src.y + src.height : src.y;
       y2 = direction === "down" ? dst.y : dst.y + dst.height;
-    } else if (isBidirectional && Math.abs(dst.layer - src.layer) <= 1) {
+    } else if (isBidirectional && adjacentLayers) {
       // Opposite return edge cleanly tracks beside forward edge (facing bottom<->top ports)
       x1 = srcCx + portOffset;
       x2 = dstCx + portOffset;
@@ -854,22 +756,24 @@ export function applyGraphOffsets(base: GraphLayoutResult, offsets: NodeOffsetMa
     };
   });
 
-  const depthMap = new Map<string, number>();
-  const groupNodes: GraphNode[] = [];
-  for (const g of base.groups) {
-    groupNodes.push(g.node);
-    let depth = 0;
-    let cur = g.node.group;
-    const seen = new Set<string>([g.node.id]);
-    while (cur && !seen.has(cur)) {
-      seen.add(cur);
-      depth++;
-      cur = base.groups.find((cand) => cand.node.id === cur)?.node.group;
-    }
-    depthMap.set(g.node.id, depth);
+  const children = new Map<string, Rect[]>();
+  for (const group of base.groups) children.set(group.node.id, []);
+  for (const node of shiftedNodes) {
+    if (node.node.group) children.get(node.node.group)?.push(node);
   }
-
-  const shiftedGroups = buildGroups(groupNodes, shiftedNodes, depthMap);
+  const updated = new Map<string, PositionedGroup>();
+  // The layout emits each parent before its descendants.
+  for (const group of [...base.groups].reverse()) {
+    const members = children.get(group.node.id)!;
+    const offset = offsets[group.node.id];
+    const frame = members.length > 0
+      ? groupFrame(group.node, members)
+      : { ...group, x: group.x + (offset?.dx ?? 0), y: group.y + (offset?.dy ?? 0) };
+    const shifted = { ...group, ...frame };
+    updated.set(group.node.id, shifted);
+    if (group.node.group) children.get(group.node.group)?.push(shifted);
+  }
+  const shiftedGroups = base.groups.map((group) => updated.get(group.node.id)!);
   const rawEdges = base.edges.map((e) => e.edge);
   const routedEdges = routeEdges(rawEdges, shiftedNodes, base.direction);
   const size = computeCanvasSize(shiftedNodes, shiftedGroups, routedEdges);
@@ -884,70 +788,28 @@ export function applyGraphOffsets(base: GraphLayoutResult, offsets: NodeOffsetMa
   };
 }
 
-export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
-  const direction = spec.direction ?? "right";
-  const allNodes: GraphNode[] = (spec.nodes ?? []).map((n) => ({
-    ...n,
-    type: n.type ?? "service",
-  }));
-  const edges: GraphEdge[] = (spec.edges ?? []).map((e) => ({
-    ...e,
-    kind: e.kind ?? "flow",
-  }));
+type LayoutEdge = Pick<GraphEdge, "from" | "to">;
+type NodeSize = Pick<Rect, "width" | "height">;
 
-  const groupNodes = allNodes.filter((n) => n.type === "group");
-  const contentNodes = allNodes.filter((n) => n.type !== "group");
-
-  if (contentNodes.length === 0 && groupNodes.length === 0) {
-    return { width: 420, height: 220, direction, nodes: [], groups: [], edges: [] };
-  }
-
-  const nodeById = new Map<string, GraphNode>();
-  for (const n of allNodes) nodeById.set(n.id, n);
-
-  const depthMap = new Map<string, number>();
-  for (const g of groupNodes) {
-    let depth = 0;
-    let cur = g.group;
-    const seen = new Set<string>([g.id]);
-    while (cur && !seen.has(cur)) {
-      seen.add(cur);
-      depth++;
-      cur = nodeById.get(cur)?.group;
-    }
-    depthMap.set(g.id, depth);
-  }
-
-  if (contentNodes.length === 0) {
-    const emptyGroups = buildGroups(groupNodes, [], depthMap);
-    const placedGroups = emptyGroups.map((g, i) => ({
-      ...g,
-      x: OUTER_PAD + i * (g.width + 24),
-      y: OUTER_PAD,
-    }));
-    const size = computeCanvasSize([], placedGroups, []);
-    return {
-      width: size.width,
-      height: size.height,
-      direction,
-      nodes: [],
-      groups: placedGroups,
-      edges: [],
-    };
-  }
-
-  const contentSet = new Set(contentNodes.map((n) => n.id));
+function positionSiblings(
+  nodes: GraphNode[],
+  edges: LayoutEdge[],
+  sizes: ReadonlyMap<string, NodeSize>,
+  direction: GraphLayoutResult["direction"],
+  grouped: boolean,
+): PositionedNode[] {
+  const contentSet = new Set(nodes.map((n) => n.id));
   const adj = new Map<string, string[]>();
   const inDegree = new Map<string, number>();
 
-  for (const n of contentNodes) {
+  for (const n of nodes) {
     adj.set(n.id, []);
     inDegree.set(n.id, 0);
   }
 
   // Break cycles via DFS to produce a clean DAG for layering
   const rawAdj = new Map<string, { to: string; idx: number }[]>();
-  for (const n of contentNodes) rawAdj.set(n.id, []);
+  for (const n of nodes) rawAdj.set(n.id, []);
   edges.forEach((e, idx) => {
     if (contentSet.has(e.from) && contentSet.has(e.to) && e.from !== e.to) {
       rawAdj.get(e.from)!.push({ to: e.to, idx });
@@ -970,12 +832,12 @@ export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
     visitState.set(id, 2);
   };
 
-  for (const n of contentNodes) {
+  for (const n of nodes) {
     if ((visitState.get(n.id) ?? 0) === 0) dfs(n.id);
   }
 
   const dagInEdges = new Map<string, string[]>();
-  for (const n of contentNodes) dagInEdges.set(n.id, []);
+  for (const n of nodes) dagInEdges.set(n.id, []);
 
   edges.forEach((e, idx) => {
     if (!contentSet.has(e.from) || !contentSet.has(e.to) || e.from === e.to) return;
@@ -990,7 +852,7 @@ export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
   const queue: string[] = [];
   const tempIn = new Map(inDegree);
 
-  for (const n of contentNodes) {
+  for (const n of nodes) {
     if ((tempIn.get(n.id) ?? 0) === 0) {
       queue.push(n.id);
       layerMap.set(n.id, 0);
@@ -1011,7 +873,7 @@ export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
     }
   }
 
-  for (const n of contentNodes) {
+  for (const n of nodes) {
     if (!layerMap.has(n.id)) layerMap.set(n.id, 0);
   }
 
@@ -1022,235 +884,174 @@ export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
   }
 
   const layers: GraphNode[][] = Array.from({ length: maxLayer + 1 }, () => []);
-  for (const n of contentNodes) {
+  for (const n of nodes) {
     layers[layerMap.get(n.id) ?? 0]!.push(n);
   }
 
-  // Track group order key so grouped nodes stay clustered cleanly together
-  const groupOrderKey = new Map<string, number>();
-  groupNodes.forEach((g, idx) => groupOrderKey.set(g.id, idx + 1));
-
-  // Barycenter + group-clustered sibling ordering within each layer
-  const orderIndex = new Map<string, number>();
-  for (let l = 0; l < layers.length; l++) {
-    const layer = layers[l]!;
-    if (l > 0) {
-      layer.sort((a, b) => {
-        const score = (node: GraphNode) => {
-          const parents = dagInEdges.get(node.id) ?? [];
-          let bary = 0;
-          if (parents.length > 0) {
-            let sum = 0;
-            for (const p of parents) sum += orderIndex.get(p) ?? 0;
-            bary = sum / parents.length;
-          }
-          const grpKey = node.group ? (groupOrderKey.get(node.group) ?? 0) : 0;
-          return { bary, grpKey };
-        };
-        const sa = score(a);
-        const sb = score(b);
-        if (Math.abs(sa.bary - sb.bary) > 0.15) return sa.bary - sb.bary;
-        if (sa.grpKey !== sb.grpKey) return sa.grpKey - sb.grpKey;
-        return 0;
-      });
-    } else {
-      layer.sort((a, b) => {
-        const ga = a.group ? (groupOrderKey.get(a.group) ?? 0) : 0;
-        const gb = b.group ? (groupOrderKey.get(b.group) ?? 0) : 0;
-        return ga - gb;
-      });
-    }
-    layer.forEach((n, idx) => orderIndex.set(n.id, idx));
+  const order = new Map<string, number>();
+  for (const layer of layers) {
+    const scores = new Map(layer.map((node) => {
+      const parents = dagInEdges.get(node.id) ?? [];
+      const total = parents.reduce((sum, parent) => sum + (order.get(parent) ?? 0), 0);
+      return [node.id, parents.length ? total / parents.length : 0];
+    }));
+    layer.sort((a, b) => {
+      const difference = scores.get(a.id)! - scores.get(b.id)!;
+      return Math.abs(difference) > 0.15 ? difference : 0;
+    });
+    layer.forEach((node, index) => order.set(node.id, index));
   }
 
-  const sizeMap = new Map<string, { width: number; height: number }>();
-  for (const n of contentNodes) sizeMap.set(n.id, estimateNodeSize(n));
+  const horizontal = direction === "right" || direction === "left";
+  const reverse = direction === "left" || direction === "up";
+  const layerGap = grouped ? (horizontal ? 72 : 52) : (horizontal ? LAYER_GAP_H : LAYER_GAP_V);
+  const siblingGap = grouped ? 36 : (horizontal ? SIBLING_GAP_H : SIBLING_GAP_V);
+  const flowSize = (size: NodeSize) => horizontal ? size.width : size.height;
+  const crossSize = (size: NodeSize) => horizontal ? size.height : size.width;
+  const spans = layers.map((layer) => {
+    const content = layer.reduce((span, node) => span + crossSize(sizes.get(node.id)!), 0);
+    return content + Math.max(0, layer.length - 1) * siblingGap;
+  });
+  const maxSpan = Math.max(...spans);
+  const positioned: PositionedNode[] = [];
+  let flow = 0;
 
-  // Check if crossing between distinct groups along same layer needs extra breathing room
-  const isHorizontal = direction === "right" || direction === "left";
-  const layerGap = isHorizontal ? LAYER_GAP_H : LAYER_GAP_V;
-  const siblingGap = isHorizontal ? SIBLING_GAP_H : SIBLING_GAP_V;
-
-  // Measure thickness of each layer along the flow axis
-  const layerThickness = layers.map((layer) => {
-    let maxDim = 0;
-    for (const n of layer) {
-      const sz = sizeMap.get(n.id)!;
-      const d = isHorizontal ? sz.width : sz.height;
-      if (d > maxDim) maxDim = d;
+  layers.forEach((layer, index) => {
+    const thickness = Math.max(...layer.map((node) => flowSize(sizes.get(node.id)!)));
+    let cross = (maxSpan - spans[index]!) / 2;
+    for (const node of layer) {
+      const size = sizes.get(node.id)!;
+      const at = flow + (thickness - flowSize(size)) / 2;
+      positioned.push({ node, ...size, layer: index, x: horizontal ? at : cross, y: horizontal ? cross : at });
+      cross += crossSize(size) + siblingGap;
     }
-    return maxDim;
+    flow += thickness + layerGap;
   });
 
-  // Also add extra layer gap when consecutive layers cross a group boundary
-  const layerExtraGap = layers.map((layer, l) => {
-    if (l >= layers.length - 1) return 0;
-    const nextLayer = layers[l + 1]!;
-    const gCurr = new Set(layer.map((n) => n.group).filter(Boolean));
-    const gNext = new Set(nextLayer.map((n) => n.group).filter(Boolean));
-    let crossesBoundary = false;
-    for (const n of layer) {
-      if (n.group && !gNext.has(n.group)) crossesBoundary = true;
-    }
-    for (const n of nextLayer) {
-      if (n.group && !gCurr.has(n.group)) crossesBoundary = true;
-    }
-    return crossesBoundary ? 34 : 0;
-  });
-
-  // Measure cross-axis spans per layer to center layers symmetrically
-  const layerCrossSpans = layers.map((layer) => {
-    let span = 0;
-    for (let i = 0; i < layer.length; i++) {
-      const n = layer[i]!;
-      const sz = sizeMap.get(n.id)!;
-      const crossDim = isHorizontal ? sz.height : sz.width;
-      span += crossDim;
-      if (i < layer.length - 1) {
-        const next = layer[i + 1]!;
-        const groupBoundary = n.group !== next.group && (Boolean(n.group) || Boolean(next.group));
-        span += siblingGap + (groupBoundary ? 42 : 0);
-      }
-    }
-    return span;
-  });
-  const maxCrossSpan = Math.max(120, ...layerCrossSpans);
-
-  const positionedNodes: PositionedNode[] = [];
-  let flowCursor = OUTER_PAD;
-
-  // For reverse directions ("left" or "up"), lay out from highest layer backward or flip afterwards
-  for (let l = 0; l < layers.length; l++) {
-    const layer = layers[l]!;
-    const thickness = layerThickness[l] ?? 0;
-    const crossSpan = layerCrossSpans[l] ?? 0;
-    let crossCursor = OUTER_PAD + Math.max(0, (maxCrossSpan - crossSpan) / 2);
-
-    for (let i = 0; i < layer.length; i++) {
-      const n = layer[i]!;
-      const sz = sizeMap.get(n.id)!;
-      const x = isHorizontal
-        ? flowCursor + (thickness - sz.width) / 2
-        : crossCursor;
-      const y = isHorizontal
-        ? crossCursor
-        : flowCursor + (thickness - sz.height) / 2;
-
-      positionedNodes.push({
-        node: n,
-        x,
-        y,
-        width: sz.width,
-        height: sz.height,
-        layer: l,
-      });
-
-      const crossDim = isHorizontal ? sz.height : sz.width;
-      crossCursor += crossDim;
-      if (i < layer.length - 1) {
-        const next = layer[i + 1]!;
-        const groupBoundary = n.group !== next.group && (Boolean(n.group) || Boolean(next.group));
-        crossCursor += siblingGap + (groupBoundary ? 42 : 0);
-      }
-    }
-
-    flowCursor += thickness + layerGap + (layerExtraGap[l] ?? 0);
-  }
-
-  // Flip coordinates cleanly for "left" or "up" directions before building group boxes and routing edges
-  if (direction === "left" || direction === "up") {
-    let maxRight = 0;
-    let maxBottom = 0;
-    for (const pn of positionedNodes) {
-      if (pn.x + pn.width > maxRight) maxRight = pn.x + pn.width;
-      if (pn.y + pn.height > maxBottom) maxBottom = pn.y + pn.height;
-    }
-    for (const pn of positionedNodes) {
-      if (direction === "left") {
-        pn.x = maxRight - (pn.x + pn.width) + OUTER_PAD;
-      } else {
-        pn.y = maxBottom - (pn.y + pn.height) + OUTER_PAD;
-      }
+  if (reverse) {
+    const extent = flow - layerGap;
+    for (const item of positioned) {
+      if (horizontal) item.x = extent - item.x - item.width;
+      else item.y = extent - item.y - item.height;
     }
   }
+  return positioned;
+}
 
-  // Iterative separation pass: ensure groups don't overlap each other or trap non-member nodes
-  let groups = buildGroups(groupNodes, positionedNodes, depthMap);
-  if (groups.length > 0) {
-    const memberSets = new Map<string, Set<string>>();
-    for (const g of groups) memberSets.set(g.node.id, new Set(g.memberIds));
-
-    for (let iter = 0; iter < 4; iter++) {
-      let moved = false;
-
-      // Push non-member nodes out of any group container they collide with
-      for (const g of groups) {
-        const members = memberSets.get(g.node.id)!;
-        for (const pn of positionedNodes) {
-          if (members.has(pn.node.id)) continue;
-          if (!rectsOverlap(pn, g, 12)) continue;
-
-          const pnCross = isHorizontal ? pn.y + pn.height / 2 : pn.x + pn.width / 2;
-          const gCross = isHorizontal ? g.y + g.height / 2 : g.x + g.width / 2;
-          if (isHorizontal) {
-            const delta =
-              pnCross >= gCross
-                ? g.y + g.height + 28 - pn.y
-                : g.y - 28 - (pn.y + pn.height);
-            pn.y += delta;
-          } else {
-            const delta =
-              pnCross >= gCross
-                ? g.x + g.width + 28 - pn.x
-                : g.x - 28 - (pn.x + pn.width);
-            pn.x += delta;
-          }
-          moved = true;
-        }
-      }
-
-      // Push overlapping sibling groups apart along cross axis
-      for (let i = 0; i < groups.length; i++) {
-        for (let j = i + 1; j < groups.length; j++) {
-          const a = groups[i]!;
-          const b = groups[j]!;
-          // Skip parent/child nested groups
-          if (memberSets.get(a.node.id)?.has(b.memberIds[0] ?? "") || memberSets.get(b.node.id)?.has(a.memberIds[0] ?? "")) {
-            continue;
-          }
-          if (!rectsOverlap(a, b, 14)) continue;
-
-          if (isHorizontal) {
-            const aMid = a.y + a.height / 2;
-            const bMid = b.y + b.height / 2;
-            const shift =
-              bMid >= aMid
-                ? a.y + a.height + 28 - b.y
-                : -(b.y + b.height + 28 - a.y);
-            const setB = memberSets.get(b.node.id)!;
-            for (const pn of positionedNodes) {
-              if (setB.has(pn.node.id)) pn.y += shift;
-            }
-          } else {
-            const aMid = a.x + a.width / 2;
-            const bMid = b.x + b.width / 2;
-            const shift =
-              bMid >= aMid
-                ? a.x + a.width + 28 - b.x
-                : -(b.x + b.width + 28 - a.x);
-            const setB = memberSets.get(b.node.id)!;
-            for (const pn of positionedNodes) {
-              if (setB.has(pn.node.id)) pn.x += shift;
-            }
-          }
-          moved = true;
-        }
-      }
-
-      if (!moved) break;
-      groups = buildGroups(groupNodes, positionedNodes, depthMap);
-    }
+function groupHierarchy(nodes: GraphNode[]): Map<string | undefined, GraphNode[]> {
+  const groups = new Map(nodes.filter((node) => node.type === "group").map((node) => [node.id, node]));
+  const parents = new Map<string, string>();
+  for (const node of nodes) {
+    if (node.group && node.group !== node.id && groups.has(node.group)) parents.set(node.id, node.group);
   }
+
+  // Authored group references can contain cycles. Promote one group from each cycle to the root.
+  const checked = new Set<string>();
+  for (const group of groups.values()) {
+    const ancestors = new Set<string>();
+    let id: string | undefined = group.id;
+    while (id !== undefined && !checked.has(id)) {
+      ancestors.add(id);
+      const parent: string | undefined = parents.get(id);
+      if (parent !== undefined && ancestors.has(parent)) {
+        parents.delete(id);
+        break;
+      }
+      id = parent;
+    }
+    for (const ancestor of ancestors) checked.add(ancestor);
+  }
+
+  const hierarchy = new Map<string | undefined, GraphNode[]>();
+  for (const node of nodes) {
+    const parent = parents.get(node.id);
+    const siblings = hierarchy.get(parent) ?? [];
+    siblings.push(node.group === parent ? node : { ...node, group: parent });
+    hierarchy.set(parent, siblings);
+  }
+  return hierarchy;
+}
+
+function positionGraph(
+  allNodes: GraphNode[],
+  edges: GraphEdge[],
+  direction: GraphLayoutResult["direction"],
+): { nodes: PositionedNode[]; groups: PositionedGroup[] } {
+  const hierarchy = groupHierarchy(allNodes);
+  const root = hierarchy.get(undefined) ?? [];
+  const grouped = root.some((node) => node.type === "group");
+
+  function positionScope(siblings: GraphNode[]): { nodes: PositionedNode[]; groups: PositionedGroup[] } {
+    if (siblings.length === 0) return { nodes: [], groups: [] };
+    const sizes = new Map<string, NodeSize>();
+    const branches = new Map<string, { frame: Rect; nodes: PositionedNode[]; groups: PositionedGroup[] }>();
+    const owner = new Map<string, string>();
+
+    for (const sibling of siblings) {
+      if (sibling.type !== "group") {
+        sizes.set(sibling.id, estimateNodeSize(sibling));
+        owner.set(sibling.id, sibling.id);
+        continue;
+      }
+
+      const branch = positionScope(hierarchy.get(sibling.id) ?? []);
+      const frame = groupFrame(sibling, [
+        ...branch.nodes.filter((node) => node.node.group === sibling.id),
+        ...branch.groups.filter((group) => group.node.group === sibling.id),
+      ]);
+      sizes.set(sibling.id, frame);
+      branches.set(sibling.id, { frame, ...branch });
+      for (const item of branch.nodes) owner.set(item.node.id, sibling.id);
+    }
+
+    // An edge constrains sibling placement at the lowest scope containing both endpoints.
+    // Keep all original edges for routing and count repeated cross-group links only once here.
+    const links: LayoutEdge[] = [];
+    const seen = new Map<string, Set<string>>();
+    for (const edge of edges) {
+      const from = owner.get(edge.from);
+      const to = owner.get(edge.to);
+      if (from === undefined || to === undefined || from === to) continue;
+      if (grouped) {
+        const destinations = seen.get(from) ?? new Set<string>();
+        if (destinations.has(to)) continue;
+        destinations.add(to);
+        seen.set(from, destinations);
+      }
+      links.push({ from, to });
+    }
+
+    const nodes: PositionedNode[] = [];
+    const groups: PositionedGroup[] = [];
+    for (const item of positionSiblings(siblings, links, sizes, direction, grouped)) {
+      const branch = branches.get(item.node.id);
+      if (!branch) {
+        nodes.push(item);
+        continue;
+      }
+
+      const { node, x, y, width, height } = item;
+      const dx = x - branch.frame.x;
+      const dy = y - branch.frame.y;
+      groups.push({ node, x, y, width, height, memberIds: branch.nodes.map((n) => n.node.id) });
+      nodes.push(...branch.nodes.map((child) => ({ ...child, x: child.x + dx, y: child.y + dy })));
+      groups.push(...branch.groups.map((group) => ({ ...group, x: group.x + dx, y: group.y + dy })));
+    }
+    return { nodes, groups };
+  }
+
+  return positionScope(root);
+}
+
+export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
+  const direction = spec.direction ?? "right";
+  const allNodes: GraphNode[] = (spec.nodes ?? []).map((node) => ({ ...node, type: node.type ?? "service" }));
+  if (allNodes.length === 0) {
+    return { width: 420, height: 220, direction, nodes: [], groups: [], edges: [] };
+  }
+  const edges: GraphEdge[] = (spec.edges ?? []).map((edge) => ({ ...edge, kind: edge.kind ?? "flow" }));
+
+  const { nodes: positionedNodes, groups } = positionGraph(allNodes, edges, direction);
 
   // Normalize all positions so top-left content starts inside OUTER_PAD without negative coords
   let minX = Number.POSITIVE_INFINITY;
@@ -1276,7 +1077,7 @@ export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
     }
   }
 
-  const routedEdges = routeEdges(edges, positionedNodes, direction);
+  const routedEdges = positionedNodes.length === 0 ? [] : routeEdges(edges, positionedNodes, direction);
 
   // Shift right/down if any outer bypass corridor pushed left/top below OUTER_PAD
   let extraLeft = Number.POSITIVE_INFINITY;
@@ -1306,7 +1107,7 @@ export function layoutGraph(spec: GraphLayoutInput): GraphLayoutResult {
             pg.x += corrX;
             pg.y += corrY;
           }
-          return routeEdges(edges, positionedNodes, direction);
+          return routedEdges.length === 0 ? [] : routeEdges(edges, positionedNodes, direction);
         })()
       : routedEdges;
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEMO_VIEW_ITEMS } from "../client/demo-views";
 import { applyGraphOffsets, layoutGraph } from "../shared/graph-layout";
 import { computeFittedTransform, zoomAroundPoint } from "../shared/graph-viewport";
 
@@ -128,6 +129,124 @@ describe("layoutGraph", () => {
         agent.y + agent.height > grp.y;
       expect(overlap).toBe(false);
     }
+  });
+
+  it("fits the grouped demo at a larger scale in a narrow portrait viewport", () => {
+    const demo = DEMO_VIEW_ITEMS.find(({ id }) => id === "demo-graph")?.spec;
+    if (demo?.type !== "graph") throw new Error("Missing grouped graph demo");
+
+    const layout = layoutGraph(demo);
+    const { scale } = computeFittedTransform(layout, 356, 300, null);
+
+    expect.soft(layout.width).toBeLessThan(1000);
+    expect(scale).toBeGreaterThan(0.32);
+  });
+
+  it.each(["right", "down", "left", "up"] as const)(
+    "keeps nested groups and their cross-group routes intact when flowing %s",
+    (direction) => {
+      const edges = [
+        { from: "start", to: "parse" },
+        { from: "parse", to: "render" },
+        { from: "render", to: "store" },
+        { from: "store", to: "start", label: "Retry" },
+      ];
+      const layout = layoutGraph({
+        direction,
+        nodes: [
+          { id: "start", label: "Start" },
+          { id: "app", type: "group", label: "App" },
+          { id: "daemon", type: "group", label: "Daemon" },
+          { id: "view", type: "group", label: "View", group: "app" },
+          { id: "parse", label: "Parse", group: "view" },
+          { id: "render", label: "Render", group: "view" },
+          { id: "store", label: "Store", group: "daemon" },
+        ],
+        edges,
+      });
+      const boxes = new Map([...layout.nodes, ...layout.groups].map((box) => [box.node.id, box]));
+
+      const appGroup = layout.groups.find(({ node }) => node.id === "app");
+      expect(new Set(appGroup?.memberIds)).toEqual(new Set(["parse", "render"]));
+      for (const [childId, parentId] of [
+        ["view", "app"],
+        ["parse", "view"],
+        ["render", "view"],
+        ["store", "daemon"],
+      ] as const) {
+        const child = boxes.get(childId)!;
+        const parent = boxes.get(parentId)!;
+        expect(child.x).toBeGreaterThan(parent.x);
+        expect(child.y).toBeGreaterThan(parent.y);
+        expect(child.x + child.width).toBeLessThan(parent.x + parent.width);
+        expect(child.y + child.height).toBeLessThan(parent.y + parent.height);
+      }
+
+      for (const [aId, bId] of [
+        ["start", "app"],
+        ["start", "daemon"],
+        ["app", "daemon"],
+        ["parse", "render"],
+      ] as const) {
+        const a = boxes.get(aId)!;
+        const b = boxes.get(bId)!;
+        const overlaps =
+          a.x < b.x + b.width &&
+          a.x + a.width > b.x &&
+          a.y < b.y + b.height &&
+          a.y + a.height > b.y;
+        expect(overlaps).toBe(false);
+      }
+
+      expect(layout.edges.map(({ edge }) => edge)).toMatchObject(edges);
+      expect(layout.edges.some(({ edge, isBackEdge }) => edge.label === "Retry" && isBackEdge)).toBe(true);
+      for (const { edge, routePoints } of layout.edges) {
+        for (const [id, point] of [
+          [edge.from, routePoints[0]!],
+          [edge.to, routePoints.at(-1)!],
+        ] as const) {
+          const { x, y, width, height } = boxes.get(id)!;
+          expect(point.x).toBeGreaterThanOrEqual(x);
+          expect(point.x).toBeLessThanOrEqual(x + width);
+          expect(point.y).toBeGreaterThanOrEqual(y);
+          expect(point.y).toBeLessThanOrEqual(y + height);
+          expect(Math.min(point.x - x, x + width - point.x, point.y - y, y + height - point.y)).toBeCloseTo(0);
+        }
+      }
+    },
+  );
+
+  it("keeps empty nested groups in place unless their ancestor is dragged", () => {
+    const base = layoutGraph({
+      direction: "up",
+      nodes: [
+        { id: "outer", type: "group", label: "Outer", group: "cycle" },
+        { id: "cycle", type: "group", label: "Cycle", group: "outer" },
+        { id: "empty", type: "group", label: "Empty", group: "outer" },
+        { id: "member", label: "Member", group: "outer" },
+        { id: "outside", label: "Outside", group: "unknown" },
+      ],
+    });
+    const group = (layout: typeof base, id: string) =>
+      layout.groups.find(({ node }) => node.id === id)!;
+    const empty = group(base, "empty");
+    const outer = group(base, "outer");
+    expect(base.groups).toHaveLength(3);
+    expect(empty.y).toBeGreaterThan(outer.y);
+    expect(base.groups.some(({ node }) => node.group === undefined)).toBe(true);
+
+    const offset = { dx: 50, dy: 70 };
+    const outsideDragged = applyGraphOffsets(base, { outside: offset });
+    expect(group(outsideDragged, "empty")).toEqual(empty);
+
+    const groupDragged = applyGraphOffsets(base, { member: offset, empty: offset });
+    expect(group(groupDragged, "empty")).toMatchObject({ x: empty.x + 50, y: empty.y + 70 });
+    expect(group(groupDragged, "outer")).toMatchObject({
+      x: outer.x + 50,
+      y: outer.y + 70,
+      width: outer.width,
+      height: outer.height,
+    });
   });
 
   it("applyGraphOffsets shifts nodes, expands parent groups, and re-routes edges dynamically", () => {

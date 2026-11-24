@@ -1179,8 +1179,13 @@ export function WebSvgGraph({
           key: `grp-${grp.node.id}`,
           opacity: groupDimmed ? 0.28 : 1,
           style: { cursor: draggingMode === "group" ? "grabbing" : "grab" },
-          onPointerDown: (e: SvgPointerEventLike) =>
-            startDrag(e, "group", grp.memberIds, null),
+          onPointerDown: (e: SvgPointerEventLike) => {
+            const groupIds = new Set([grp.node.id]);
+            for (const { node } of layout.groups) {
+              if (node.group && groupIds.has(node.group)) groupIds.add(node.id);
+            }
+            startDrag(e, "group", [...grp.memberIds, ...groupIds], null);
+          },
         },
         svgEl("rect", {
           x: grp.x,
