@@ -135,21 +135,21 @@ function SettingsEditor({
         <SettingsCard>
           <SettingsSwitch
             label="Files & folders"
-            hint="Allow reading JSON, JSONL, CSV, TSV files and directory listings."
+            hint="Off until enabled. Allow reading JSON, JSONL, CSV, TSV files and directory listings."
             value={settings.values.allowFileSource}
             disabled={settings.saving}
             onValueChange={(allowFileSource) => patch({ allowFileSource })}
           />
           <SettingsSwitch
             label="SQLite databases (read-only)"
-            hint="Allow read-only SQLite queries via sqlite3 -readonly."
+            hint="One read-only SQL statement through Node's SQLite interface. Client commands such as .shell are rejected."
             value={settings.values.allowSqliteSource}
             disabled={settings.saving}
             onValueChange={(allowSqliteSource) => patch({ allowSqliteSource })}
           />
           <SettingsSwitch
             label="HTTP endpoints"
-            hint="Allow fetching JSON or CSV data from HTTP(S) URLs."
+            hint="Off until enabled. Allow fetching JSON or CSV data from HTTP(S) URLs."
             value={settings.values.allowHttpSource}
             disabled={settings.saving}
             onValueChange={(allowHttpSource) => patch({ allowHttpSource })}

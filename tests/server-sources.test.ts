@@ -2,7 +2,7 @@ import http from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execCommand } from "@getpaseo/plugin/server";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseDotEnv, redactSecret, resolvePostgresUrl } from "../server/env-loader";
 import { createQueryViewHandler } from "../server/handlers";
@@ -93,15 +93,16 @@ describe("server sources and view lifecycle", () => {
     await writeFile(path.join(dir, "events.jsonl"), '{"ev":"start"}\n{"ev":"stop"}\n', "utf8");
     await writeFile(path.join(dir, "sub", "worker.ts"), "export const x = 1;", "utf8");
 
+    const fileSettings = { ...DEFAULT_SETTINGS, allowFileSource: true };
     expect(
-      await executeSource({ kind: "file", path: "items.csv" }, { cwd: dir, settings: DEFAULT_SETTINGS }),
+      await executeSource({ kind: "file", path: "items.csv" }, { cwd: dir, settings: fileSettings }),
     ).toEqual([
       { id: 1, name: "Alpha", score: 90 },
       { id: 2, name: "Beta", score: 80 },
     ]);
 
     expect(
-      await executeSource({ kind: "file", path: "items.tsv" }, { cwd: dir, settings: DEFAULT_SETTINGS }),
+      await executeSource({ kind: "file", path: "items.tsv" }, { cwd: dir, settings: fileSettings }),
     ).toEqual([
       { name: "X", count: 5 },
       { name: "Y", count: 9 },
@@ -110,35 +111,54 @@ describe("server sources and view lifecycle", () => {
     expect(
       await executeSource(
         { kind: "file", path: "nested.json", rows: "payload.rows" },
-        { cwd: dir, settings: DEFAULT_SETTINGS },
+        { cwd: dir, settings: fileSettings },
       ),
     ).toEqual([{ k: "m", v: 42 }]);
 
     expect(
-      await executeSource({ kind: "file", path: "events.jsonl" }, { cwd: dir, settings: DEFAULT_SETTINGS }),
+      await executeSource({ kind: "file", path: "events.jsonl" }, { cwd: dir, settings: fileSettings }),
     ).toEqual([{ ev: "start" }, { ev: "stop" }]);
 
     const folderFlat = await executeSource(
       { kind: "folder", path: ".", glob: "*.csv" },
-      { cwd: dir, settings: DEFAULT_SETTINGS },
+      { cwd: dir, settings: fileSettings },
     );
     expect(folderFlat.map((r) => r.name)).toEqual(["items.csv"]);
 
     const folderRec = await executeSource(
       { kind: "folder", path: ".", glob: "**/*.ts" },
-      { cwd: dir, settings: DEFAULT_SETTINGS },
+      { cwd: dir, settings: fileSettings },
     );
     expect(folderRec.map((r) => r.relativePath)).toEqual(["sub/worker.ts"]);
   });
 
-  it("executes read-only sqlite queries and rejects SQL writes", async () => {
+  it("keeps file and HTTP sources off until enabled", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "items.csv"), "id\n1\n", "utf8");
+    expect(DEFAULT_SETTINGS.allowFileSource).toBe(false);
+    expect(DEFAULT_SETTINGS.allowHttpSource).toBe(false);
+    await expect(
+      executeSource({ kind: "file", path: "items.csv" }, { cwd: dir, settings: DEFAULT_SETTINGS }),
+    ).rejects.toThrow(/disabled by default/i);
+    await expect(
+      executeSource({ kind: "folder", path: "." }, { cwd: dir, settings: DEFAULT_SETTINGS }),
+    ).rejects.toThrow(/disabled by default/i);
+    await expect(
+      executeSource(
+        { kind: "http", url: "http://127.0.0.1/json" },
+        { cwd: dir, settings: DEFAULT_SETTINGS },
+      ),
+    ).rejects.toThrow(/disabled by default/i);
+  });
+
+  it("runs one read-only SQL statement and rejects writes and client commands", async () => {
     const dir = await makeTempDir();
     const dbPath = path.join(dir, "test.db");
-    await execCommand(
-      "sqlite3",
-      [dbPath, "CREATE TABLE metrics(k TEXT, v INT); INSERT INTO metrics VALUES ('a', 10), ('b', 20);"],
-      { cwd: dir },
+    const writer = new DatabaseSync(dbPath);
+    writer.exec(
+      "CREATE TABLE metrics(k TEXT, v INT); INSERT INTO metrics VALUES ('a', 10), ('b', 20);",
     );
+    writer.close();
 
     const rows = await executeSource(
       { kind: "sqlite", path: "test.db", query: "SELECT k, v FROM metrics WHERE v >= {{min}}" },
@@ -152,6 +172,27 @@ describe("server sources and view lifecycle", () => {
         { cwd: dir, settings: DEFAULT_SETTINGS },
       ),
     ).rejects.toThrow(/readonly/i);
+
+    await expect(
+      executeSource(
+        { kind: "sqlite", path: "test.db", query: ".shell echo pwned" },
+        { cwd: dir, settings: DEFAULT_SETTINGS },
+      ),
+    ).rejects.toThrow(/client commands/i);
+
+    await expect(
+      executeSource(
+        { kind: "sqlite", path: "test.db", query: "SELECT 1; .shell echo pwned" },
+        { cwd: dir, settings: DEFAULT_SETTINGS },
+      ),
+    ).rejects.toThrow(/client commands/i);
+
+    await expect(
+      executeSource(
+        { kind: "sqlite", path: "test.db", query: "SELECT 1; SELECT 2" },
+        { cwd: dir, settings: DEFAULT_SETTINGS },
+      ),
+    ).rejects.toThrow(/one read-only SQL statement/i);
   });
 
   it("executes HTTP sources with dot-path extraction, CSV, headers, templating, and error handling", async () => {
@@ -188,6 +229,7 @@ describe("server sources and view lifecycle", () => {
     const addr = server.address() as { port: number };
     const baseUrl = `http://127.0.0.1:${addr.port}`;
 
+    const httpSettings = { ...DEFAULT_SETTINGS, allowHttpSource: true };
     const jsonRows = await executeSource(
       {
         kind: "http",
@@ -195,13 +237,13 @@ describe("server sources and view lifecycle", () => {
         headers: { "x-test-key": "k42" },
         rows: "data.items",
       },
-      { cwd: dir, settings: DEFAULT_SETTINGS, controlValues: { region: "EU" } },
+      { cwd: dir, settings: httpSettings, controlValues: { region: "EU" } },
     );
     expect(jsonRows).toEqual([{ region: "EU", token: "k42" }]);
 
     const csvRows = await executeSource(
       { kind: "http", url: `${baseUrl}/csv`, format: "csv" },
-      { cwd: dir, settings: DEFAULT_SETTINGS },
+      { cwd: dir, settings: httpSettings },
     );
     expect(csvRows).toEqual([
       { service: "api", rps: 420 },
@@ -211,7 +253,7 @@ describe("server sources and view lifecycle", () => {
     await expect(
       executeSource(
         { kind: "http", url: `${baseUrl}/fail` },
-        { cwd: dir, settings: DEFAULT_SETTINGS },
+        { cwd: dir, settings: httpSettings },
       ),
     ).rejects.toThrow(/500/);
   });
@@ -301,7 +343,8 @@ describe("server sources and view lifecycle", () => {
     );
 
     const store = new ViewStore({ storeDir: dir });
-    const tool = createShowViewTool(store, () => DEFAULT_SETTINGS);
+    const sourceSettings = { ...DEFAULT_SETTINGS, allowFileSource: true };
+    const tool = createShowViewTool(store, () => sourceSettings);
     const result = await tool.execute(
       {
         view: {
@@ -342,7 +385,7 @@ describe("server sources and view lifecycle", () => {
     const sc = result.structuredContent as { viewId: string; token: string; rowCount: number };
     expect(sc.rowCount).toBe(3);
 
-    const handler = createQueryViewHandler(store, () => DEFAULT_SETTINGS);
+    const handler = createQueryViewHandler(store, () => sourceSettings);
     const queried = await handler({
       viewId: sc.viewId,
       sort: "-revenue",

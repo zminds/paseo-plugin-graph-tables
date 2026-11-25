@@ -1,6 +1,7 @@
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { execCommand } from "@getpaseo/plugin/server";
 import {
   parseStructuredRows,
@@ -13,6 +14,77 @@ import { redactSecret, resolvePostgresUrl } from "./env-loader";
 
 const SOURCE_TIMEOUT_MS = 25_000;
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+
+function stripSqlLiteralsAndComments(sql: string): string {
+  let out = "";
+  let i = 0;
+  while (i < sql.length) {
+    const char = sql[i];
+    const next = sql[i + 1];
+    if (char === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      i = end === -1 ? sql.length : end;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      i = end === -1 ? sql.length : end + 2;
+      out += " ";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      const quote = char;
+      i += 1;
+      while (i < sql.length) {
+        if (sql[i] === quote) {
+          if (sql[i + 1] === quote) {
+            i += 2;
+            continue;
+          }
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      out += "''";
+      continue;
+    }
+    out += char;
+    i += 1;
+  }
+  return out;
+}
+
+function assertSingleReadOnlySql(query: string): string {
+  const sql = query.trim();
+  if (!sql) {
+    throw new Error("SQLite query is empty.");
+  }
+  const statements = stripSqlLiteralsAndComments(sql)
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (statements.some((part) => part.startsWith("."))) {
+    throw new Error(
+      "SQLite client commands are not allowed. Pass one read-only SQL statement.",
+    );
+  }
+  if (statements.length !== 1) {
+    throw new Error("SQLite accepts one read-only SQL statement.");
+  }
+  return sql;
+}
+
+function querySqliteReadOnly(dbPath: string, query: string): DataRow[] {
+  const sql = assertSingleReadOnlySql(query);
+  const db = new DatabaseSync(dbPath, { readOnly: true, allowExtension: false });
+  try {
+    const rows = db.prepare(sql).all();
+    return rows.map((row) => ({ ...row }));
+  } finally {
+    db.close();
+  }
+}
 
 function resolveWorkspacePath(cwd: string, targetPath: string): string {
   return path.isAbsolute(targetPath) ? targetPath : path.resolve(cwd, targetPath);
@@ -100,7 +172,9 @@ export async function executeSource(
   switch (source.kind) {
     case "file": {
       if (!settings.allowFileSource) {
-        throw new Error("File data sources are disabled in Graph & Tables settings.");
+        throw new Error(
+          "File data sources are disabled by default. Enable them in Settings -> Graph & Tables.",
+        );
       }
       const resolvedPath = resolveWorkspacePath(cwd, source.path);
       const content = await readFile(resolvedPath, "utf8");
@@ -118,7 +192,9 @@ export async function executeSource(
 
     case "folder": {
       if (!settings.allowFileSource) {
-        throw new Error("Folder data sources are disabled in Graph & Tables settings.");
+        throw new Error(
+          "Folder data sources are disabled by default. Enable them in Settings -> Graph & Tables.",
+        );
       }
       return listFolderRows(cwd, source.path, source.glob, maxRows);
     }
@@ -129,14 +205,7 @@ export async function executeSource(
       }
       const dbPath = resolveWorkspacePath(cwd, source.path);
       const query = substituteTemplate(source.query, controlValues, "sql");
-      const { stdout } = await execCommand("sqlite3", ["-readonly", "-json", dbPath, query], {
-        cwd,
-        timeout: SOURCE_TIMEOUT_MS,
-        maxBuffer: MAX_BUFFER_BYTES,
-        signal,
-      });
-      if (!stdout.trim()) return [];
-      return parseStructuredRows(stdout, "json").slice(0, maxRows);
+      return querySqliteReadOnly(dbPath, query).slice(0, maxRows);
     }
 
     case "postgres": {
@@ -171,7 +240,9 @@ export async function executeSource(
 
     case "http": {
       if (!settings.allowHttpSource) {
-        throw new Error("HTTP data sources are disabled in Graph & Tables settings.");
+        throw new Error(
+          "HTTP data sources are disabled by default. Enable them in Settings -> Graph & Tables.",
+        );
       }
       const rawUrl = substituteTemplate(source.url, controlValues, "url");
       let parsedUrl: URL;

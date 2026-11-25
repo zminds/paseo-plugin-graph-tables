@@ -28,7 +28,7 @@ paseo plugin install "$(pwd)"
 
 - **Agent prompt & `show_view` tool injection** via `agent.open.before` (`index.server.ts`).
 - **Daemon-side view store & query engine** (`server/`) supporting:
-  - 7 data sources: `file` (JSON/JSONL/CSV/TSV), `folder`, `sqlite` (read-only), `postgres` (opt-in via `.env`), `http`, `command` (opt-in), and `script` (opt-in).
+  - 7 data sources: `file` and `folder` (opt-in), `sqlite` (one read-only SQL statement, no sqlite3 client commands), `postgres` (opt-in via `.env`), `http` (opt-in), `command` (opt-in), and `script` (opt-in). A `show_view` row preview is returned to the agent and its model provider.
   - Interactive `controls`: `buttons`, `select`, `number`, `toggle`, `search`, with safe `{{id}}` parameter interpolation.
   - `views.query`, `views.list`, and `views.export` RPCs for sorting, filtering, searching, pagination, live refresh, and host file export (`~/.paseo-exports`, `~/Downloads/paseo-exports`, or `~/Desktop`).
 - **Cross-platform timeline transformer & renderers** (`client/`):

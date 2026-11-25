@@ -17,4 +17,5 @@ Two ways to render views:
 
 2. Tool call \`show_view\` (best for large datasets or live sources):
    Pass \`view\` with \`data\` or \`source\`: {"kind":"file"|"folder"|"sqlite"|"postgres"|"http"|"command"|"script", ...} and optional \`controls\` (buttons, select, number, toggle, search) whose \`{{id}}\` values interpolate safely into commands/queries/URLs, plus \`columns\` typing (text, number, percent, currency, bytes, date, datetime, bool, url, path, color, image, code, badge) and \`refresh\` seconds.
+   File, folder, and HTTP sources are off until the user enables them. SQLite accepts one read-only SQL statement and rejects sqlite3 client commands. Postgres, shell commands, and scripts are opt-in. The row preview returned by \`show_view\` is sent back to you and your model provider.
    Put the exact token returned by \`show_view\` (e.g. <<paseo-view:v_...>>) on its own line where the view belongs.`;

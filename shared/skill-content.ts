@@ -23,15 +23,15 @@ Keep to 1 or 2 views per reply unless the user asks for more, and never add a vi
 Use \`show_view\` whenever data is large, needs server-side pagination/filtering, or comes from a live \`source\`.
 
 Supported \`source\` shapes (all run on the daemon host; secrets in \`.env\` are never returned):
-- \`{"kind": "file", "path": "data/sales.csv", "format": "auto"|"json"|"jsonl"|"csv"|"tsv", "rows": "data.items"}\`
-- \`{"kind": "folder", "path": "src", "glob": "**/*.ts"}\`
-- \`{"kind": "sqlite", "path": "app.db", "query": "SELECT * FROM jobs LIMIT 500"}\`
+- \`{"kind": "file", "path": "data/sales.csv", "format": "auto"|"json"|"jsonl"|"csv"|"tsv", "rows": "data.items"}\` (off until enabled in Settings)
+- \`{"kind": "folder", "path": "src", "glob": "**/*.ts"}\` (off until enabled in Settings)
+- \`{"kind": "sqlite", "path": "app.db", "query": "SELECT * FROM jobs LIMIT 500"}\` (one read-only SQL statement; sqlite3 client commands are rejected)
 - \`{"kind": "postgres", "query": "SELECT ...", "env": "DATABASE_URL"}\` (requires opt-in in Settings)
-- \`{"kind": "http", "url": "https://api.example.com/items?region={{region}}", "rows": "data.items"}\`
+- \`{"kind": "http", "url": "https://api.example.com/items?region={{region}}", "rows": "data.items"}\` (off until enabled in Settings)
 - \`{"kind": "command", "command": "./report.sh --region {{region}}", "format": "json"}\` (requires opt-in)
 - \`{"kind": "script", "language": "python"|"node"|"sh"|"bash"|"ruby"|"perl", "code": "...", "args": [...], "format": "json"}\` (requires opt-in)
 
-\`show_view\` runs the source once, caches rows on the daemon, and returns a token like \`<<paseo-view:v_abc123>>\` plus a preview. Put that **exact token on its own line** in your response where the view should appear. Never invent a token without calling \`show_view\`.
+\`show_view\` runs the source once, caches rows on the daemon, and returns a token like \`<<paseo-view:v_abc123>>\` plus a preview of the first rows. That preview is a tool result, so it is sent to the agent and its model provider. Put that **exact token on its own line** in your response where the view should appear. Never invent a token without calling \`show_view\`.
 
 ## Option B: Inline fenced blocks (\`paseo-view\` / \`paseo-graph\`)
 

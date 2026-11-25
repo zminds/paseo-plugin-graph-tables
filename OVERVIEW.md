@@ -13,7 +13,11 @@ Adapted and re-implemented from [Beluga](https://github.com/beluga-labs/beluga)'
 
 ## Setup and source permissions
 
-Open **Settings -> Graph & Tables** to configure prompt injection, the `show_view` tool, automatic Markdown table upgrades, and allowed dynamic data sources. File/folder, read-only SQLite, and HTTP sources are enabled by default. PostgreSQL (`psql` with connection strings resolved from `.env` or environment variables), shell commands, and inline scripts (`python`, `node`, `sh`, `bash`, `ruby`, `perl`) are disabled by default and require explicit opt-in.
+Open **Settings -> Graph & Tables** to configure prompt injection, the `show_view` tool, automatic Markdown table upgrades, and which dynamic data sources may run.
+
+File, folder, and HTTP sources are off until you enable them. SQLite is on by default and runs through Node's read-only SQL interface. That interface accepts one SQL statement and does not accept sqlite3 client commands such as `.shell` or `.read`. PostgreSQL (`psql`, with the connection string resolved from `.env` or the environment), shell commands, and inline scripts (`python`, `node`, `sh`, `bash`, `ruby`, `perl`) stay off until you enable them.
+
+`show_view` returns a short preview of the rows it loaded. That preview is the tool result, so the agent receives it and sends it to the agent's model provider with the rest of the turn. The full row set stays in the plugin process for the on-screen view.
 
 ## Compatibility and platform notes
 
