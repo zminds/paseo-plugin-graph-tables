@@ -116,7 +116,7 @@ function SettingsEditor({
           />
           <SettingsSwitch
             label="Install global agent SKILL.md"
-            hint="Auto-installs ~/.agents/skills, ~/.claude/skills, and ~/.gemini/config/skills (preserves symlinks)."
+            hint="Required for automatic rendering via skills across Codex, Claude Code, Gemini CLI, and ACP agents. Keep enabled (~/.agents/skills, ~/.claude/skills, ~/.gemini/config/skills)."
             value={settings.values.installGlobalSkills}
             disabled={settings.saving}
             onValueChange={(installGlobalSkills) => patch({ installGlobalSkills })}

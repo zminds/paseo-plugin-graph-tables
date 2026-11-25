@@ -6,6 +6,7 @@
   "files": [
     "paseo-plugin.json",
     "OVERVIEW.md",
+    "OVERVIEW.*.md",
     "SKILL.md",
     "README.md",
     "index.client.tsx",

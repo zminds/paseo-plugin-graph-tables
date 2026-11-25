@@ -2,13 +2,26 @@
 
 A [Paseo](https://paseo.sh) plugin that brings [Beluga](https://github.com/beluga-labs/beluga)-style interactive tables, charts, KPI stat tiles, timelines, heatmaps, calendars, and auto-layout architecture diagrams into Paseo agent timelines and workspace panels.
 
+中文简介：面向 [Paseo](https://paseo.sh) 的可视化插件（适配自 [Beluga](https://github.com/beluga-labs/beluga)），在智能体对话时间线和工作区面板中自动渲染自动布局复杂流程图、可筛选交互表格与单行预览、6 种图表、KPI 指标卡、甘特图、热力图与活跃度日历。完整的英文与简体中文商店介绍分别位于 [OVERVIEW.md](OVERVIEW.md) 和 [OVERVIEW.zh-CN.md](OVERVIEW.zh-CN.md)。
+
 > **Attribution**: This plugin adapts and re-implements Beluga's (`https://github.com/beluga-labs/beluga`) `view` and `graph` UX workflows inside Paseo's plugin subprocess (`index.server.ts`) and cross-platform React Native client runtime (`index.client.tsx`).
 
-![Order processing workflow with 11 nodes and three groups](assets/screenshots/desktop/workflow.webp)
+> **Important / 重要说明：通过 Skills 自动渲染，请勿禁用 Skills**
+>
+> - **English**: Automatic rendering of diagrams, charts, and data views relies on the synced `paseo-graph-tables` skill (`~/.agents/skills`, `~/.claude/skills`, `~/.gemini/config/skills`). **Do not disable skills** in **Settings → Graph & Tables** (`Install global agent SKILL.md`) or in your agent/provider configuration (Codex, Claude Code, Gemini CLI, Pi, ACP providers), otherwise agents will not emit the visualization blocks automatically.
+> - **中文**：对话回复中的流程图、图表和交互视图依赖插件自动同步的 `paseo-graph-tables` 技能（同步至 `~/.agents/skills`、`~/.claude/skills`、`~/.gemini/config/skills`）触发自动渲染。**请勿禁用 Skills**：请在 **设置 → Graph & Tables** 保持 `Install global agent SKILL.md` 开启，且不要在 Codex、Claude Code、Gemini CLI、Pi 或 ACP Provider 设置中关闭 Skills 功能或停用 `paseo-graph-tables`，否则智能体不会自动输出可视化视图。
 
-The workflow connects checkout, inventory, fulfillment, and notifications. [Stock reservation walkthrough](assets/screenshots/desktop/workflow-guided.webp)
+![Graph & Tables overview showing a grouped workflow diagram, filterable service table, and stacked area chart](assets/listing/01-hero.png)
 
 ## Install
+
+Install the reviewed listing from the Paseo plugin registry:
+
+```bash
+paseo plugin add zminds/graph-tables
+```
+
+Or install directly from GitHub:
 
 ```bash
 paseo plugin install github:zminds/paseo-plugin-graph-tables
@@ -24,38 +37,43 @@ npm run typecheck
 paseo plugin install "$(pwd)"
 ```
 
-## Screenshots
+## Showcase
 
-These screenshots use sample data in Paseo Web at 1440 × 1060 and 390 × 844. Open **Views → Demo Gallery** to try the built-in examples.
+All screenshots below are captured from Paseo Web UI using sample data. Open **Views → Demo Gallery** inside any workspace to try every built-in example.
 
-### Filterable tables and Markdown tables
+### Complex workflows and guided walkthroughs
 
-The service table shows the three busiest endpoints with environment badges, formatted metrics, and links.
+Auto-layout DAG diagrams support grouped layers, 18 node types (including `worker`, `queue`, `database` fields, `decision` branches, `task` checklists, and `metric` values), animated SmoothStep edges, drag-to-arrange, step walkthroughs, and SVG/PNG export.
 
-![Typed service table with the Top 3 filter applied](assets/screenshots/desktop/table.webp)
+![Complex order and telemetry workflow diagram with grouped layers and step walkthrough inset](assets/listing/02-complex-workflows.png)
 
-The release checklist was emitted as a Markdown table in an agent reply. Select a row to see all its fields and copy values individually. [Expanded release checklist row](assets/screenshots/desktop/markdown-row-preview.webp)
+### Interactive tables, row previews, and Markdown upgrades
 
-![Release checklist rendered from a Markdown table in the agent timeline](assets/screenshots/desktop/markdown-table.webp)
+Typed service tables support button presets, selects, number filters, toggles, search, CSV/Markdown export, and one-click chart switching. Click any row to open an inline accordion with all fields and per-field copy actions. Multi-row Markdown tables emitted in agent replies upgrade into interactive cards automatically.
 
-### Chart readouts
+![Service table with expanded inline row preview alongside an upgraded Markdown release checklist](assets/listing/03-tables-row-preview.png)
 
-Hover over or select a chart mark to see its values. On multi-series charts, use the legend to hide or restore a series.
+### Six chart types with interactive readouts
 
-![Stacked area chart with the selected week's token counts](assets/screenshots/desktop/area.webp)
+Switch between stacked bar, smooth line, stacked area, pie, donut, and scatter charts with one click. Toggle legend items to isolate series, hover or click marks for exact readouts, and export SVG or PNG.
 
-### Mobile Web
+![Four interactive chart views: stacked area, stacked bar, donut with center readout, and smooth multi-series line](assets/listing/04-multi-charts.png)
 
-The same workflow can be laid out top to bottom. The row preview fits all fields in the viewport while the table columns scroll horizontally.
+### KPI stats, Gantt schedules, heatmaps, and color palettes
 
-<p>
-  <a href="assets/screenshots/mobile/workflow.webp"><img src="assets/screenshots/mobile/workflow.webp" width="280" alt="Full order processing workflow laid out vertically on mobile Web"></a>
-  <a href="assets/screenshots/mobile/table-row-preview.webp"><img src="assets/screenshots/mobile/table-row-preview.webp" width="280" alt="All seven fields of the expanded gateway-edge row on mobile Web"></a>
-</p>
+Render telemetry KPI cards with sparklines and polarity deltas, project release Gantt timelines with milestones, activity heatmaps, calendars, and copyable color swatches.
 
-### View gallery
+![KPI telemetry tiles, Gantt release timeline, activity heatmap, and accent color swatches](assets/listing/05-dashboards-views.png)
 
-Select a screenshot to inspect the view at its captured size. The six chart examples show the readout after selecting a data point or slice.
+### Desktop and Mobile Web
+
+On phones and narrow viewports, diagrams open full-screen with step focus and vertical layout toggling, while tables expand full-field row drawers for comfortable inspection.
+
+![Mobile Web views showing a full-screen step-focused workflow diagram and an expanded table row drawer](assets/listing/06-desktop-mobile.png)
+
+### Raw view gallery
+
+Select a screenshot to inspect individual raw desktop (1440 × 1060) and mobile (390 × 844) captures. The six chart examples show the readout after selecting a data point or slice.
 
 | View | Desktop Web | Mobile Web |
 | --- | --- | --- |

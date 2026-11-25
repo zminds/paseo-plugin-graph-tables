@@ -1,8 +1,22 @@
 {
   "id": "agent-graph-tables",
   "name": "Graph & Tables",
-  "description": "Interactive tables, charts, KPI stats, timelines, heatmaps, calendars, and auto-layout diagrams for agent replies. Re-implemented from Beluga (https://github.com/beluga-labs/beluga) for Paseo's plugin runtime.",
-  "media": ["assets/flow.png", "assets/chart.png"],
+  "description": "Auto-renders interactive tables with row inspection, 6 chart types, KPI stats, Gantt timelines, heatmaps, and layered workflow diagrams in Paseo replies via synced agent skills (do not disable skills).",
+  "icon": "assets/icon.png",
+  "media": [
+    "assets/listing/01-hero.png",
+    "assets/listing/02-complex-workflows.png",
+    "assets/listing/03-tables-row-preview.png",
+    "assets/listing/04-multi-charts.png",
+    "assets/listing/05-dashboards-views.png",
+    "assets/listing/06-desktop-mobile.png"
+  ],
+  "translations": {
+    "zh-CN": {
+      "name": "Graph & Tables 图表与流程图",
+      "description": "通过同步的 Skills 在 Paseo 回复中自动渲染复杂流程图、交互式表格与单行预览、6 种图表、KPI 指标卡、甘特图与热力图（请勿禁用 Skills）。"
+    }
+  },
   "requirements": {
     "paseo": ">=0.14.0"
   }
