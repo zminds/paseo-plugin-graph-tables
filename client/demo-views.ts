@@ -342,7 +342,7 @@ export const DEMO_VIEW_ITEMS: readonly DemoViewItem[] = [
           id: "store",
           type: "database",
           label: "View Store",
-          sublabel: "LRU + views.json",
+          sublabel: "in-memory LRU",
           group: "daemon",
           status: "done",
           fields: [

@@ -1,9 +1,9 @@
 import http from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseDotEnv, redactSecret, resolvePostgresUrl } from "../server/env-loader";
 import { createQueryViewHandler } from "../server/handlers";
 import { createShowViewTool } from "../server/show-view-tool";
@@ -18,6 +18,25 @@ async function makeTempDir() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "paseo-gt-test-"));
   tempDirs.push(dir);
   return dir;
+}
+
+function showViewContext(
+  cwd: string,
+): Parameters<ReturnType<typeof createShowViewTool>["execute"]>[1] {
+  return {
+    agent: {
+      id: "agent-1",
+      workspaceId: "ws-1",
+      parentAgentId: null,
+      provider: "codex",
+      cwd,
+      title: "Test",
+      background: false,
+      metadata: {},
+    },
+    paseo: {} as never,
+    signal: new AbortController().signal,
+  };
 }
 
 afterEach(async () => {
@@ -325,6 +344,103 @@ describe("server sources and view lifecycle", () => {
     expect(bashRows).toEqual([{ lang: "bash", val: 42 }]);
   });
 
+  it("evicts the least recently used view when inserting a 201st entry", async () => {
+    const store = new ViewStore();
+    const input = {
+      spec: { type: "table" as const },
+      rows: [],
+      cwd: "/workspace",
+      agentId: "agent-1",
+    };
+    const read = await store.create(input);
+    const updated = await store.create(input);
+    const oldest = await store.create(input);
+    for (let i = 3; i < 200; i++) await store.create(input);
+
+    expect(await store.get(read.viewId)).toEqual(read);
+    const updatedRows = [{ score: 42 }];
+    expect(await store.updateRows(updated.viewId, updatedRows)).toMatchObject({ rows: updatedRows });
+    const newest = await store.create({ ...input, agentId: "agent-2" });
+
+    const entries = await store.list();
+    expect(entries).toHaveLength(200);
+    expect(entries.slice(0, 3).map((entry) => entry.viewId)).toEqual([
+      newest.viewId,
+      updated.viewId,
+      read.viewId,
+    ]);
+    expect(await store.list("agent-2")).toEqual([newest]);
+    expect(await store.get(oldest.viewId)).toBeNull();
+    expect(await store.updateRows(oldest.viewId, [])).toBeNull();
+  });
+
+  it("keeps show_view HTTP rows and headers in memory and expires tokens across store instances", async () => {
+    const dir = await makeTempDir();
+    const headers = { authorization: "Bearer test-only" };
+    const rows = [{ report: "in-memory result" }];
+    const server = http.createServer((req, res) => {
+      if (req.headers.authorization !== headers.authorization) {
+        res.writeHead(401).end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(rows));
+    });
+    openServers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as { port: number };
+    const source = { kind: "http", url: `http://127.0.0.1:${port}`, headers };
+
+    // Redirect the former default path before loading the store. Check filesystem calls
+    // as well as files so a pending background snapshot cannot pass this test.
+    const tmpdir = vi.spyOn(os, "tmpdir").mockReturnValue(dir);
+    const readSnapshot = vi.fn().mockRejectedValue(new Error("Unexpected view snapshot read"));
+    const makeSnapshotDir = vi.fn().mockRejectedValue(new Error("Unexpected view snapshot"));
+    const writeSnapshot = vi.fn().mockRejectedValue(new Error("Unexpected view snapshot"));
+    vi.resetModules();
+    vi.doMock("node:fs/promises", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("node:fs/promises")>()),
+      mkdir: makeSnapshotDir,
+      readFile: readSnapshot,
+      writeFile: writeSnapshot,
+    }));
+    try {
+      const { ViewStore } = await import("../server/view-store");
+      const store = new ViewStore();
+      const getSettings = () => ({ ...DEFAULT_SETTINGS, allowHttpSource: true });
+      const result = await createShowViewTool(store, getSettings).execute(
+        { view: { type: "table", source } },
+        showViewContext(dir),
+      );
+      expect(result.isError).toBeUndefined();
+      const { viewId } = result.structuredContent as { viewId: string };
+      expect(result.structuredContent).toMatchObject({
+        token: `<<paseo-view:${viewId}>>`,
+        preview: rows,
+      });
+      expect(await store.get(viewId)).toMatchObject({ rows, spec: { source: { headers } } });
+      expect(await createQueryViewHandler(store, getSettings)({ viewId, refresh: true })).toMatchObject({
+        rows,
+        error: null,
+      });
+
+      const recreated = new ViewStore();
+      expect(await recreated.get(viewId)).toBeNull();
+      expect(await recreated.list()).toEqual([]);
+      expect(await createQueryViewHandler(recreated, getSettings)({ viewId })).toMatchObject({
+        rows: [],
+        error: expect.stringContaining("was not found"),
+      });
+      expect(writeSnapshot).not.toHaveBeenCalled();
+      expect(makeSnapshotDir).not.toHaveBeenCalled();
+      expect(readSnapshot).not.toHaveBeenCalled();
+      expect(await readdir(dir)).toEqual([]);
+    } finally {
+      vi.doUnmock("node:fs/promises");
+      vi.resetModules();
+      tmpdir.mockRestore();
+    }
+  });
+
   it("stores views via show_view, supports control source overrides, and refreshes stale polling views", async () => {
     const dir = await makeTempDir();
     await writeFile(
@@ -342,7 +458,7 @@ describe("server sources and view lifecycle", () => {
       "utf8",
     );
 
-    const store = new ViewStore({ storeDir: dir });
+    const store = new ViewStore();
     const sourceSettings = { ...DEFAULT_SETTINGS, allowFileSource: true };
     const tool = createShowViewTool(store, () => sourceSettings);
     const result = await tool.execute(
@@ -365,20 +481,7 @@ describe("server sources and view lifecycle", () => {
           ],
         },
       },
-      {
-        agent: {
-          id: "agent-1",
-          workspaceId: "ws-1",
-          parentAgentId: null,
-          provider: "codex",
-          cwd: dir,
-          title: "Test",
-          background: false,
-          metadata: {},
-        },
-        paseo: {} as never,
-        signal: new AbortController().signal,
-      },
+      showViewContext(dir),
     );
 
     expect(result.isError).toBeUndefined();
@@ -413,7 +516,5 @@ describe("server sources and view lifecycle", () => {
 
     const refreshed = await handler({ viewId: sc.viewId });
     expect(refreshed.rows).toEqual([{ region: "NA", revenue: 999 }]);
-
-    await store.flush();
   });
 });

@@ -83,7 +83,7 @@ async function makeTempDir() {
 }
 
 function createTestExportHandler(outDir: string) {
-  return createExportViewHandler(new ViewStore({ storeDir: outDir }), () => ({
+  return createExportViewHandler(new ViewStore(), () => ({
     ...DEFAULT_SETTINGS,
     exportDirectory: outDir,
   }));

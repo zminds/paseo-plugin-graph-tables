@@ -9,7 +9,7 @@ Adapted and re-implemented from [Beluga](https://github.com/beluga-labs/beluga)'
 
 - Views: `table`, `chart` (`bar`, `line`, `area`, `pie`, `donut`, `scatter`), `stats`, `graph` (layered DAG layout with groups, edge kinds, step walkthroughs, and clickable Markdown details), `gantt`, `heatmap`, `calendar`, `colors`, and `code`.
 - Interactive controls: `buttons`, `select`, `number`, `toggle`, and `search`, including safe `{{controlId}}` parameter substitution into source queries, URLs, commands, and scripts.
-- Workspace panel: the Views panel lists views created during the daemon session so you can inspect and refresh them side-by-side.
+- Workspace panel: the Views panel lists views held by the running plugin so you can inspect and refresh them side-by-side.
 
 ## Setup and source permissions
 
@@ -17,7 +17,9 @@ Open **Settings -> Graph & Tables** to configure prompt injection, the `show_vie
 
 File, folder, and HTTP sources are off until you enable them. SQLite is on by default and runs through Node's read-only SQL interface. That interface accepts one SQL statement and does not accept sqlite3 client commands such as `.shell` or `.read`. PostgreSQL (`psql`, with the connection string resolved from `.env` or the environment), shell commands, and inline scripts (`python`, `node`, `sh`, `bash`, `ruby`, `perl`) stay off until you enable them.
 
-`show_view` returns a short preview of the rows it loaded. That preview is the tool result, so the agent receives it and sends it to the agent's model provider with the rest of the turn. The full row set stays in the plugin process for the on-screen view.
+`show_view` returns a short row preview to the agent and its model provider with the rest of the turn. The plugin keeps up to 200 view definitions, including source settings such as HTTP headers, and their loaded rows in memory on the daemon host. The least recently used views are removed when the cache fills. Reloading or stopping the plugin clears the cache, including when the daemon restarts. Run `show_view` again to recreate an expired view. Saving an export writes a separate file to your configured export folder.
+
+Earlier versions may have left a `paseo-graph-tables-views` directory in the daemon's system temporary directory. After stopping the older version, the daemon owner can remove that directory to clear its old snapshots.
 
 ## Compatibility and platform notes
 

@@ -93,9 +93,8 @@ export default function contribute(server: PluginServerContext) {
     };
   });
 
-  return async () => {
+  return () => {
     unsubSettings();
     removeOpenHook();
-    await store.flush();
   };
 }

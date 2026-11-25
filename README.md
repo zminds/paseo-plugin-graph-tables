@@ -84,7 +84,7 @@ Select a screenshot to inspect the view at its captured size. The six chart exam
 ## Features
 
 - **Agent prompt & `show_view` tool injection** via `agent.open.before` (`index.server.ts`).
-- **Daemon-side view store & query engine** (`server/`) supporting:
+- **Daemon-side view cache & query engine** (`server/`). Tool-backed views stay in memory until evicted or the plugin reloads or stops.
   - 7 data sources: `file` and `folder` (opt-in), `sqlite` (one read-only SQL statement, no sqlite3 client commands), `postgres` (opt-in via `.env`), `http` (opt-in), `command` (opt-in), and `script` (opt-in). A `show_view` row preview is returned to the agent and its model provider.
   - Interactive `controls`: `buttons`, `select`, `number`, `toggle`, `search`, with safe `{{id}}` parameter interpolation.
   - `views.query`, `views.list`, and `views.export` RPCs for sorting, filtering, searching, pagination, live refresh, and host file export (`~/.paseo-exports`, `~/Downloads/paseo-exports`, or `~/Desktop`).
