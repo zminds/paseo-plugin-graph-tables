@@ -88,6 +88,12 @@ export function nodeGlyphShapes(
         path(`M ${n(x - 5.5)} ${n(y - 2.2)} h 7.2 l 2.2 2.2 l -2.2 2.2 h -7.2 l -2.2 -2.2 z`),
         { tag: "circle", cx: n(x - 2.2), cy: y, r: 0.9, fill: "color" },
       ];
+    case "worker":
+      return [
+        { tag: "rect", x: n(x - 3.8), y: n(y - 3.8), width: 7.6, height: 7.6, rx: 1.2, fill: "none" },
+        path(`M ${n(x - 6)} ${y} h 2.2 M ${n(x + 3.8)} ${y} h 2.2 M ${x} ${n(y - 6)} v 2.2 M ${x} ${n(y + 3.8)} v 2.2`),
+        { tag: "circle", cx: x, cy: y, r: 1.1, fill: "color" },
+      ];
     case "decision":
       return [
         {

@@ -159,6 +159,7 @@ export type ControlSpec = z.infer<typeof controlSpecSchema>;
 export const graphNodeTypeSchema = z.enum([
   "client",
   "service",
+  "worker",
   "database",
   "queue",
   "storage",

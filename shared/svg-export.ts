@@ -546,6 +546,7 @@ function typeAccentColor(type: PositionedNode["node"]["type"], colors: SvgThemeP
     case "actor":
     case "person":
     case "service":
+    case "worker":
     case "function":
     case "metric":
       return colors.accent;

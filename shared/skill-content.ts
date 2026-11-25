@@ -1,3 +1,5 @@
+import { graphNodeTypeSchema } from "./view-schema";
+
 export const SKILL_NAME = "paseo-graph-tables";
 
 export const SKILL_MARKDOWN = `---
@@ -90,6 +92,8 @@ Every interactive view includes built-in export controls in the client UI (savin
 
 ### Interactive Graph (\`paseo-graph\` / \`beluga-graph\`)
 Strict JSON (no comments, no trailing commas, no manual coordinates). Omit the direction for the default left-to-right layout. Use 4 to 25 nodes, concise 2-4 word labels, \`"type": "group"\` container boxes (\`"group": "<id>"\` on child nodes) whenever components belong to distinct layers, processes, or hosts, and \`steps\` when walking through a flow:
+
+Supported node types: ${graphNodeTypeSchema.options.join(", ")}. Use \`worker\` for background jobs and subprocesses.
 
 \`\`\`\`markdown
 \`\`\`paseo-graph

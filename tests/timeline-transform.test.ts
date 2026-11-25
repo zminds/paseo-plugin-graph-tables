@@ -108,7 +108,7 @@ describe("timeline transformers", () => {
           { id: "client", type: "client", label: "远程客户端", sublabel: "手机或浏览器" },
           { id: "relay", type: "external", label: "中继或直连", sublabel: "同一条 WebSocket" },
           { id: "daemon", type: "service", label: "Paseo Daemon", sublabel: "编译并下发" },
-          { id: "worker", type: "function", label: "插件子进程", sublabel: "index.server.ts" },
+          { id: "worker", type: "worker", label: "插件子进程", sublabel: "index.server.ts" },
           { id: "bundle", type: "file", label: "客户端 Bundle", sublabel: "index.client.tsx" },
           { id: "surface", type: "function", label: "本地界面", sublabel: "React Native" },
         ],
@@ -161,6 +161,14 @@ describe("timeline transformers", () => {
       expect(isStrictTimelineData(item.data)).toBe(true);
     }
     expect(markdownSegmentSchema.safeParse(res?.items[0]?.data).success).toBe(true);
+    expect(res?.items[1]?.data).toMatchObject({
+      mode: "inline",
+      spec: {
+        nodes: expect.arrayContaining([
+          { id: "worker", type: "worker", label: "插件子进程", sublabel: "index.server.ts" },
+        ]),
+      },
+    });
     expect(dataViewSegmentSchema.safeParse(res?.items[1]?.data).success).toBe(true);
     expect(dataViewSegmentSchema.safeParse(res?.items[2]?.data).success).toBe(true);
   });

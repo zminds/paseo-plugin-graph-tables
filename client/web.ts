@@ -757,6 +757,7 @@ function typeAccentColor(type: PositionedNode["node"]["type"], theme: PluginThem
     case "actor":
     case "person":
     case "service":
+    case "worker":
     case "function":
     case "metric":
       return theme.colors.accent;
